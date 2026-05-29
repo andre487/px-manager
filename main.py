@@ -408,7 +408,7 @@ class RobotsHandler(tornado.web.RequestHandler):
 
     def get(self):
         self.set_header("Content-Type", "text/plain; charset=utf-8")
-        self.write("User-agent: *\nDisallow: /\n")
+        self.write(resource_path("static", "robots.txt").read_text())
 
 
 class AdminHandler(BaseHandler):
