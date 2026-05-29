@@ -226,6 +226,15 @@
         mode: "0600"
         force: false
 
+    - name: Ensure tg-proxies.txt exists
+      ansible.builtin.copy:
+        content: "{{ proxy_manager_tg_proxies | default('') }}"
+        dest: "{{ px_manager_data_dir }}/tg-proxies.txt"
+        owner: "{{ px_manager_user }}"
+        group: "{{ px_manager_group }}"
+        mode: "0600"
+        force: false
+
     - name: Install systemd service
       ansible.builtin.template:
         src: px-manager.service.j2

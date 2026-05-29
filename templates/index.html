@@ -41,6 +41,16 @@
       </form>
     {% end %}
     </section>
+    {% if current_user and tg_proxies %}
+      <section class="tg-proxies">
+        <h2>Telegram proxies</h2>
+        <div class="tg-links">
+          {% for tg_proxy in tg_proxies %}
+            <a href="{{ tg_proxy }}">{{ tg_proxy }}</a>
+          {% end %}
+        </div>
+      </section>
+    {% end %}
     {% if current_user and message %}<div class="message">{% raw message_html %}</div>{% end %}
   </main>
 </body>

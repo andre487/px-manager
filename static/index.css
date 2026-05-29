@@ -107,3 +107,28 @@ button,
   gap: 10px;
   flex-wrap: wrap;
 }
+
+.tg-proxies {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 800px;
+}
+
+.tg-proxies h2 {
+  margin: 0 0 10px;
+  font-size: 20px;
+}
+
+.tg-links {
+  display: grid;
+  gap: 8px;
+}
+
+.tg-links a {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 6px;
+  color: #1769aa;
+  background: color-mix(in srgb, #1769aa 8%, Canvas);
+  overflow-wrap: anywhere;
+}

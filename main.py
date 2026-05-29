@@ -276,6 +276,7 @@ class IndexHandler(BaseHandler):
                 error="Too many failed login attempts. Try again later.",
                 message="",
                 message_html="",
+                tg_proxies=[],
                 is_admin=False,
             )
             return
@@ -286,6 +287,7 @@ class IndexHandler(BaseHandler):
             error=None,
             message=message,
             message_html=compile_message_html(message),
+            tg_proxies=read_tg_proxies(self.data_dir),
             is_admin=self.is_admin,
         )
 
@@ -301,6 +303,7 @@ class IndexHandler(BaseHandler):
                 error="Too many failed login attempts. Try again later.",
                 message="",
                 message_html="",
+                tg_proxies=[],
                 is_admin=False,
             )
             return
@@ -313,6 +316,7 @@ class IndexHandler(BaseHandler):
                 error="Invalid login or password",
                 message="",
                 message_html="",
+                tg_proxies=[],
                 is_admin=False,
             )
             return
@@ -363,6 +367,7 @@ class AdminHandler(BaseHandler):
         self.render(
             "admin.html",
             message=read_message(self.data_dir),
+            tg_proxies=read_tg_proxies_text(self.data_dir),
             saved=False,
             active_bans=self.ban_store.active_bans(),
             format_timestamp=format_timestamp,
@@ -370,9 +375,11 @@ class AdminHandler(BaseHandler):
 
     def post(self):
         write_message(self.data_dir, self.get_body_argument("message", ""))
+        write_tg_proxies(self.data_dir, self.get_body_argument("tg_proxies", ""))
         self.render(
             "admin.html",
             message=read_message(self.data_dir),
+            tg_proxies=read_tg_proxies_text(self.data_dir),
             saved=True,
             active_bans=self.ban_store.active_bans(),
             format_timestamp=format_timestamp,
@@ -615,6 +622,7 @@ def build_csp_header() -> str:
             "frame-ancestors 'none'",
             "form-action 'self'",
             "img-src 'self'",
+            "navigate-to 'self' tg:",
             "object-src 'none'",
             "script-src 'none'",
             "style-src 'self'",
@@ -630,6 +638,18 @@ def read_optional_text(path: pathlib.Path) -> str:
 
 def read_message(data_dir: pathlib.Path) -> str:
     return read_optional_text(data_dir / "message.md")
+
+
+def read_tg_proxies_text(data_dir: pathlib.Path) -> str:
+    return read_optional_text(data_dir / "tg-proxies.txt")
+
+
+def read_tg_proxies(data_dir: pathlib.Path) -> list[str]:
+    return [
+        line.strip()
+        for line in read_tg_proxies_text(data_dir).splitlines()
+        if line.strip().startswith("tg://")
+    ]
 
 
 def compile_message_html(message: str) -> str:
@@ -676,6 +696,10 @@ def render_inline_markdown(text: str) -> str:
 
 def write_message(data_dir: pathlib.Path, message: str) -> None:
     (data_dir / "message.md").write_text(message.strip())
+
+
+def write_tg_proxies(data_dir: pathlib.Path, tg_proxies: str) -> None:
+    (data_dir / "tg-proxies.txt").write_text(tg_proxies.strip())
 
 
 def format_timestamp(timestamp: float) -> str:
