@@ -5,6 +5,7 @@ import secrets
 import sys
 import time
 from dataclasses import dataclass
+from urllib.parse import quote, urlencode
 
 import click
 import tornado.escape
@@ -118,6 +119,10 @@ class BaseHandler(tornado.web.RequestHandler):
     def session_store(self) -> SessionStore:
         return self.application.settings["session_store"]
 
+    @property
+    def hosts_data(self) -> list[dict]:
+        return self.application.settings["hosts_data"]
+
     def get_current_user(self):
         session = self.get_session()
         if session is None:
@@ -215,6 +220,70 @@ class ApiHandler(BaseHandler):
         )
 
 
+class ProxyListGenerateHandler(BaseHandler):
+    def prepare(self):
+        self.authenticated_credentials = self.get_authenticated_credentials()
+        if self.authenticated_credentials is None:
+            self.set_status(401)
+            self.set_header("WWW-Authenticate", 'Basic realm="px-manager"')
+            self.finish({"error": "authentication required"})
+
+    def get(self):
+        username, password = self.authenticated_credentials  # type: ignore
+        proxy_type = self.get_query_argument("type", "https").lower()
+        default_port = self.get_query_argument("port", "443")
+
+        if proxy_type not in {"http", "https", "ssl", "socks", "socks4", "socks5"}:
+            self.set_status(400)
+            self.finish({"error": "unsupported proxy type"})
+            return
+
+        lines = [
+            build_proxy_list_line(
+                item,
+                username=username,
+                password=password,
+                proxy_type=proxy_type,
+                default_port=default_port,
+            )
+            for item in self.hosts_data
+        ]
+
+        self.set_header("Content-Type", "text/plain; charset=utf-8")
+        self.set_header(
+            "Content-Disposition",
+            'attachment; filename="proxy-list.txt"',
+        )
+        self.write("\n".join(lines) + "\n")
+
+
+def build_proxy_list_line(
+    host_data: dict,
+    *,
+    username: str,
+    password: str,
+    proxy_type: str,
+    default_port: str,
+) -> str:
+    host = host_data["host"]
+    port = str(host_data.get("port", default_port))
+    title = host_data.get("title") or host_data.get("code") or host
+    code = host_data.get("code")
+
+    params = {
+        "title": title,
+        "patternIncludesAll": "false",
+        "patternExcludesIntranet": "false",
+    }
+    if code:
+        params["cc"] = code
+
+    return (
+        f"{proxy_type}://{quote(username, safe='')}:"
+        f"{quote(password, safe='')}@{host}:{port}?{urlencode(params)}"
+    )
+
+
 def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Application:
     hosts_data = json.loads((data_dir / "hosts.json").read_text())
 
@@ -225,6 +294,7 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
             (r"/logout", LogoutHandler),
             (r"/favicon.ico", FaviconHandler),
             (r"/api", ApiHandler),
+            (r"/api/generate/proxy-list", ProxyListGenerateHandler),
         ],
         cookie_secret=cookie_secret,
         static_path=str(resource_path("static")),

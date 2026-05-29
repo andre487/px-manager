@@ -14,9 +14,11 @@
     label { display: grid; gap: 6px; font-size: 14px; }
     input { box-sizing: border-box; width: 100%; padding: 10px 12px; border: 1px solid color-mix(in srgb, CanvasText 25%, Canvas); border-radius: 6px; font: inherit; background: Canvas; color: CanvasText; }
     button { padding: 10px 14px; border: 0; border-radius: 6px; font: inherit; font-weight: 650; color: white; background: #1769aa; cursor: pointer; }
+    .button { display: inline-block; padding: 10px 14px; border-radius: 6px; font: inherit; font-weight: 650; color: white; background: #1769aa; text-decoration: none; }
     .error { margin: 0 0 14px; padding: 10px 12px; border-radius: 6px; color: #8a1f11; background: #fde8e4; }
     .session { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .session a { color: #1769aa; }
+    .actions { margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap; }
   </style>
 </head>
 <body>
@@ -26,6 +28,9 @@
       <div class="session">
         <span>Signed in as <strong>{{ escape(current_user) }}</strong></span>
         <a href="/logout">Logout</a>
+      </div>
+      <div class="actions">
+        <a class="button" href="/api/generate/proxy-list" download="proxy-list.txt">Download proxy list</a>
       </div>
     {% else %}
       <h1>px-manager</h1>
