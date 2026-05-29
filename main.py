@@ -1,6 +1,7 @@
 import html
 import hashlib
 import json
+import logging
 import pathlib
 import re
 import secrets
@@ -10,10 +11,12 @@ import sys
 import time
 from dataclasses import dataclass
 from functools import lru_cache
+from logging.handlers import RotatingFileHandler
 from urllib.parse import quote, urlencode, urlparse
 
 import click
 import tornado.escape
+import tornado.log
 import tornado.httpserver
 import tornado.ioloop
 import tornado.web
@@ -24,6 +27,8 @@ SESSION_TTL_SECONDS = 30 * 60
 SESSION_CLEANUP_INTERVAL_MS = 60 * 1000
 SESSION_COOKIE_NAME = "session"
 TLS_FINGERPRINT_TTL_SECONDS = 6 * 60 * 60
+LOG_MAX_BYTES = 100 * 1024 * 1024
+LOG_BACKUP_COUNT = 1
 LOGIN_FAILURE_LIMIT = 5
 AUTH_FAILURE_LIMIT = 20
 FAILURE_WINDOW_SECONDS = 60 * 60
@@ -33,6 +38,8 @@ MESSAGE_HTML_CACHE: dict[str, str] = {}
 LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
+AUTH_LOG = logging.getLogger("px_manager.auth")
+BAN_LOG = logging.getLogger("px_manager.ban")
 
 cur_dir = pathlib.Path.cwd()
 
@@ -151,16 +158,28 @@ class BanStore:
         return True
 
     def record_login_failure(self, ip: str) -> None:
-        self._record_failure(self._login_failures, ip, LOGIN_FAILURE_LIMIT)
+        self._record_failure(
+            self._login_failures,
+            ip,
+            LOGIN_FAILURE_LIMIT,
+            failure_type="login",
+        )
 
     def record_auth_failure(self, ip: str) -> None:
-        self._record_failure(self._auth_failures, ip, AUTH_FAILURE_LIMIT)
+        self._record_failure(
+            self._auth_failures,
+            ip,
+            AUTH_FAILURE_LIMIT,
+            failure_type="auth",
+        )
 
     def _record_failure(
         self,
         failures_by_ip: dict[str, list[float]],
         ip: str,
         failure_limit: int,
+        *,
+        failure_type: str,
     ) -> None:
         if self.is_banned(ip):
             return
@@ -174,9 +193,18 @@ class BanStore:
         failures.append(now)
 
         if len(failures) >= failure_limit:
+            expires_at = now + self._ban_ttl_seconds
             self._bans[ip] = Ban(
                 ip=ip,
-                expires_at=now + self._ban_ttl_seconds,
+                expires_at=expires_at,
+            )
+            BAN_LOG.warning(
+                "ban_created ip=%s failure_type=%s failures=%d limit=%d expires_at=%s",
+                ip,
+                failure_type,
+                len(failures),
+                failure_limit,
+                format_timestamp(expires_at),
             )
             self._login_failures.pop(ip, None)
             self._auth_failures.pop(ip, None)
@@ -192,7 +220,9 @@ class BanStore:
         return sorted(self._bans.values(), key=lambda ban: ban.expires_at)
 
     def delete(self, ip: str) -> None:
-        self._bans.pop(ip, None)
+        ban = self._bans.pop(ip, None)
+        if ban is not None:
+            BAN_LOG.info("ban_deleted ip=%s", ip)
         self._login_failures.pop(ip, None)
         self._auth_failures.pop(ip, None)
 
@@ -376,6 +406,8 @@ class IndexHandler(BaseHandler):
             return
 
         self.ban_store.record_success(client_ip)
+        AUTH_LOG.info("login_success ip=%s user=%s", client_ip, username)
+        self.access_log_username = username
         session_id = self.session_store.create(username, password)
         self.set_secure_cookie(
             SESSION_COOKIE_NAME,
@@ -978,13 +1010,104 @@ def format_timestamp(timestamp: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
 
 
+def configure_logging(log_dir: pathlib.Path) -> None:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    configure_tagged_logger(
+        logging.getLogger("tornado.access"),
+        tag="access",
+        log_file=log_dir / "access.log",
+    )
+    configure_tagged_logger(
+        AUTH_LOG,
+        tag="auth",
+        log_file=log_dir / "auth.log",
+    )
+    configure_tagged_logger(
+        BAN_LOG,
+        tag="ban",
+        log_file=log_dir / "ban.log",
+    )
+
+
+def configure_tagged_logger(
+    logger: logging.Logger,
+    *,
+    tag: str,
+    log_file: pathlib.Path,
+) -> None:
+    logger.handlers.clear()
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    formatter = logging.Formatter(
+        f"%(asctime)s %(levelname)s [{tag}] %(message)s",
+        "%Y-%m-%d %H:%M:%S",
+    )
+
+    stderr_handler = logging.StreamHandler()
+    stderr_handler.setFormatter(formatter)
+    logger.addHandler(stderr_handler)
+
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+
+class PxManagerApplication(tornado.web.Application):
+    def log_request(self, handler: tornado.web.RequestHandler) -> None:
+        status = handler.get_status()
+        if status < 400:
+            log_method = tornado.log.access_log.info
+        elif status < 500:
+            log_method = tornado.log.access_log.warning
+        else:
+            log_method = tornado.log.access_log.error
+
+        request_time_ms = 1000.0 * handler.request.request_time()
+        log_method(
+            "%d %s %s ip=%s user=%s %.2fms",
+            status,
+            handler.request.method,
+            handler.request.uri,
+            get_access_log_ip(handler),
+            get_access_log_username(handler),
+            request_time_ms,
+        )
+
+
+def get_access_log_ip(handler: tornado.web.RequestHandler) -> str:
+    if isinstance(handler, BaseHandler):
+        return handler.client_ip
+
+    real_ip = handler.request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+
+    return handler.request.remote_ip  # type: ignore
+
+
+def get_access_log_username(handler: tornado.web.RequestHandler) -> str:
+    username = getattr(handler, "access_log_username", None)
+    if username:
+        return str(username)
+
+    if isinstance(handler, BaseHandler) and handler.current_user:
+        return str(handler.current_user)
+
+    return "-"
+
+
 def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Application:
     hosts_data = json.loads((data_dir / "hosts.json").read_text())
     admin_user = read_optional_text(data_dir / "admin.txt") or None
 
     session_store = SessionStore(SESSION_TTL_SECONDS)
     ban_store = BanStore(BAN_TTL_SECONDS, FAILURE_WINDOW_SECONDS)
-    return tornado.web.Application(
+    return PxManagerApplication(
         [
             (r"/", IndexHandler),
             (r"/admin", AdminHandler),
@@ -1027,6 +1150,17 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
     ),
     default=cur_dir / "data",
 )
+@click.option(
+    "--log-dir",
+    type=click.Path(
+        dir_okay=True,
+        file_okay=False,
+        path_type=pathlib.Path,
+    ),
+    default=cur_dir / "logs",
+    show_default=True,
+    help="Directory for access/auth/ban log files.",
+)
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=8888, show_default=True, type=int)
 @click.option(
@@ -1041,6 +1175,7 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
 )
 def main(
     data_dir: pathlib.Path,
+    log_dir: pathlib.Path,
     host: str,
     port: int,
     cors_origin: tuple[str, ...],
@@ -1049,6 +1184,7 @@ def main(
     if not cookie_secret:
         cookie_secret = secrets.token_urlsafe(32)
 
+    configure_logging(log_dir)
     app = make_app(data_dir, cookie_secret)
     app.settings["cors_allowed_origins"] = set(cors_origin)
     server = tornado.httpserver.HTTPServer(app)

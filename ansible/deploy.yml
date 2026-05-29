@@ -9,6 +9,7 @@
     px_manager_home: /srv/px_manager
     px_manager_bin_dir: "{{ px_manager_home }}/bin"
     px_manager_data_dir: "{{ px_manager_home }}/data"
+    px_manager_log_dir: /var/log/px-manager
     px_manager_build_dir: /tmp/px-manager-build
     px_manager_service_name: px-manager
     px_manager_service_port: 8888
@@ -99,6 +100,10 @@
           group: "{{ px_manager_group }}"
           mode: "0750"
         - path: "{{ px_manager_data_dir }}"
+          owner: "{{ px_manager_user }}"
+          group: "{{ px_manager_group }}"
+          mode: "0750"
+        - path: "{{ px_manager_log_dir }}"
           owner: "{{ px_manager_user }}"
           group: "{{ px_manager_group }}"
           mode: "0750"
