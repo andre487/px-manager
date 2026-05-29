@@ -27,8 +27,10 @@
             <a class="button" href="/api/generate/foxy-proxy" download="{{ escape(current_user) }}-foxy-proxy.json">FoxyProxy.json</a>
           </div>
         </div>
-        <a class="button admin-link" href="/doc">Документация</a>
-        {% if is_admin %}<a class="button admin-link" href="/admin">Админка</a>{% end %}
+        <nav class="page-links" aria-label="Навигация">
+          <a href="/doc">Документация</a>
+          {% if is_admin %}<a href="/admin">Админка</a>{% end %}
+        </nav>
         {% if tg_proxies %}
           <section class="tg-proxies">
             <h2>Прокси для Telegram</h2>

@@ -1,6 +1,18 @@
 :root {
   color-scheme: light dark;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --accent: #1769aa;
+  --accent-strong: #0f578f;
+  --border: #d8dee8;
+  --muted: #5f6b7a;
+  --surface: #ffffff;
+  --surface-soft: #f5f8fb;
+  --info-bg: #e9f3ff;
+  --info-border: #9dc7f2;
+  --info-text: #123f6d;
+  --danger-bg: #fde8e4;
+  --danger-text: #8a1f11;
+  --shadow: 0 18px 48px rgba(18, 36, 64, 0.12);
 }
 
 body {
@@ -8,12 +20,13 @@ body {
   min-height: 100vh;
   display: grid;
   place-items: center;
-  background: Canvas;
-  color: CanvasText;
+  background: #eef3f7;
+  color: #17202a;
 }
 
 main {
-  width: min(100% - 32px, 920px);
+  width: min(100% - 32px, 945px);
+  padding: 32px 0;
 }
 
 .home-layout {
@@ -30,7 +43,13 @@ main {
 }
 
 .auth {
+  box-sizing: border-box;
   width: 100%;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
 }
 
 form {
@@ -40,37 +59,49 @@ form {
 
 h1 {
   margin: 0 0 20px;
-  font-size: 28px;
-  font-weight: 650;
+  font-size: 30px;
+  line-height: 1.1;
+  font-weight: 700;
 }
 
 label {
   display: grid;
   gap: 6px;
   font-size: 14px;
+  color: var(--muted);
 }
 
 input {
   box-sizing: border-box;
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid #c7c7c7;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
   border-radius: 6px;
   font: inherit;
-  background: Canvas;
-  color: CanvasText;
+  background: var(--surface);
+  color: #17202a;
+}
+
+input:focus {
+  border-color: var(--accent);
+  outline: 3px solid #cfe5f8;
 }
 
 button,
 .button {
-  padding: 10px 14px;
+  padding: 10px 16px;
   border: 0;
   border-radius: 6px;
   font: inherit;
   font-weight: 650;
   color: white;
-  background: #1769aa;
+  background: var(--accent);
   cursor: pointer;
+}
+
+button:hover,
+.button:hover {
+  background: var(--accent-strong);
 }
 
 .button {
@@ -86,28 +117,31 @@ button,
   box-sizing: border-box;
   width: 100%;
   margin: 0;
-  padding: 14px 16px;
+  padding: 18px 20px;
   border-radius: 8px;
-  border: 1px solid #93c5fd;
-  color: #1e3a8a;
-  background: #dbeafe;
+  border: 1px solid var(--info-border);
+  color: var(--info-text);
+  background: var(--info-bg);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  line-height: 1.5;
 }
 
 .error {
   margin: 0 0 14px;
   padding: 10px 12px;
   border-radius: 6px;
-  color: #8a1f11;
-  background: #fde8e4;
+  color: var(--danger-text);
+  background: var(--danger-bg);
 }
 
 .session {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--muted);
 }
 
 .actions {
@@ -129,11 +163,26 @@ button,
 .download-group h2,
 .tg-proxies h2 {
   margin: 0 0 10px;
-  font-size: 20px;
+  font-size: 16px;
+  color: var(--muted);
+  font-weight: 650;
 }
 
-.admin-link {
-  margin-top: 14px;
+.page-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.page-links a {
+  color: var(--accent);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.page-links a:hover {
+  text-decoration: underline;
 }
 
 .tg-links {
@@ -145,9 +194,14 @@ button,
   display: block;
   padding: 10px 12px;
   border-radius: 6px;
-  color: #1769aa;
-  background: #edf5fc;
+  color: var(--accent);
+  background: var(--surface-soft);
   overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.tg-links a:hover {
+  background: #e7f0f8;
 }
 
 .content {
@@ -161,7 +215,7 @@ button,
   }
 
   main {
-    padding: 28px 0;
+    padding: 20px 0;
   }
 
   .home-layout,
@@ -171,11 +225,41 @@ button,
 }
 
 @media (prefers-color-scheme: dark) {
-  input {
-    border-color: #555;
+  :root {
+    --accent: #6cb7ee;
+    --accent-strong: #91cdf6;
+    --border: #2d3a48;
+    --muted: #aeb8c3;
+    --surface: #111820;
+    --surface-soft: #172331;
+    --info-bg: #10273e;
+    --info-border: #285d8a;
+    --info-text: #c7e4ff;
+    --danger-bg: #3b1714;
+    --danger-text: #ffd2ca;
+    --shadow: none;
   }
 
-  .tg-links a {
-    background: #132c40;
+  body {
+    background: #0b1117;
+    color: #e8edf2;
+  }
+
+  input {
+    background: var(--surface);
+    color: #e8edf2;
+  }
+
+  input:focus {
+    outline-color: #173a56;
+  }
+
+  button,
+  .button {
+    color: #071018;
+  }
+
+  .tg-links a:hover {
+    background: #1d3042;
   }
 }
