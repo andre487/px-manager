@@ -936,6 +936,34 @@ def find_host_data(hosts_data: list[dict], host: str) -> dict | None:
     return None
 
 
+def get_selected_host_data(hosts_data: list[dict]) -> dict | None:
+    for item in hosts_data:
+        if item.get("selected"):
+            return item
+
+    return hosts_data[0] if hosts_data else None
+
+
+def order_selected_first(
+    hosts_data: list[dict],
+    values: list[str],
+    selected_host: dict | None,
+) -> list[str]:
+    if selected_host is None or selected_host not in hosts_data:
+        return values
+
+    selected_index = hosts_data.index(selected_host)
+    if selected_index >= len(values):
+        return values
+
+    selected_value = values[selected_index]
+    return [selected_value] + [
+        value
+        for index, value in enumerate(values)
+        if index != selected_index
+    ]
+
+
 def get_host_port(host_data: dict, default_port: int = 443) -> int:
     return int(host_data.get("port", default_port))
 
@@ -1040,6 +1068,7 @@ def build_super_proxy_config(
     password: str,
     default_port: str,
 ) -> str:
+    selected_host = get_selected_host_data(hosts_data)
     lines = ["# superproxy:proxylist:v1"]
     lines.extend(
         build_super_proxy_line(
@@ -1047,9 +1076,9 @@ def build_super_proxy_config(
             username=username,
             password=password,
             default_port=default_port,
-            is_default=index == 0,
+            is_default=item is selected_host,
         )
-        for index, item in enumerate(hosts_data)
+        for item in hosts_data
     )
     return "\n".join(lines) + "\n"
 
@@ -1064,7 +1093,7 @@ def build_super_proxy_line(
 ) -> str:
     host = host_data["host"]
     port = str(host_data.get("port", default_port))
-    title = str(host_data.get("code") or host_data.get("title") or host)
+    title = str(host_data.get("title") or host_data.get("code") or host)
     fingerprint = get_tls_fingerprint(host, int(port))
     fingerprint_query = f"?fingerprint={quote(fingerprint, safe='')}"
     default_marker = " *" if is_default else ""
@@ -1110,6 +1139,7 @@ def build_foxy_proxy_config(
     proxy_type: str,
     default_port: str,
 ) -> dict:
+    selected_host = get_selected_host_data(hosts_data)
     proxies = [
         build_foxy_proxy_entry(
             item,
@@ -1123,7 +1153,7 @@ def build_foxy_proxy_config(
     ]
 
     return {
-        "mode": build_foxy_proxy_mode(proxies),
+        "mode": build_foxy_proxy_mode(proxies, hosts_data, selected_host),
         "sync": False,
         "autoBackup": False,
         "passthrough": "",
@@ -1173,11 +1203,20 @@ def build_foxy_proxy_entry(
     }
 
 
-def build_foxy_proxy_mode(proxies: list[dict]) -> str:
+def build_foxy_proxy_mode(
+    proxies: list[dict],
+    hosts_data: list[dict],
+    selected_host: dict | None,
+) -> str:
     if not proxies:
         return ""
-    first_proxy = proxies[0]
-    return f"{first_proxy['hostname']}:{first_proxy['port']}"
+
+    selected_proxy = proxies[0]
+    if selected_host is not None and selected_host in hosts_data:
+        selected_index = hosts_data.index(selected_host)
+        if selected_index < len(proxies):
+            selected_proxy = proxies[selected_index]
+    return f"{selected_proxy['hostname']}:{selected_proxy['port']}"
 
 
 def pick_proxy_color(index: int) -> str:
@@ -1209,10 +1248,12 @@ def build_shadowrocket_config(
     proxy_type: str,
     default_port: str,
 ) -> str:
+    selected_host = get_selected_host_data(hosts_data)
     proxy_names = [
         build_shadowrocket_proxy_name(item, index)
         for index, item in enumerate(hosts_data, start=1)
     ]
+    ordered_proxy_names = order_selected_first(hosts_data, proxy_names, selected_host)
     lines = [
         "[General]",
         "bypass-system = true",
@@ -1235,7 +1276,7 @@ def build_shadowrocket_config(
         [
             "",
             "[Proxy Group]",
-            f"PROXY = select, {', '.join(proxy_names)}, DIRECT",
+            f"PROXY = select, {', '.join(ordered_proxy_names)}, DIRECT",
             "",
             "[Rule]",
             "FINAL,PROXY",

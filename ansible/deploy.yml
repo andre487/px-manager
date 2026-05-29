@@ -36,10 +36,12 @@
           - admin_user is defined
           - proxy_users is defined
           - proxy_hosts is defined
+          - selected_proxy is defined
+          - selected_proxy in proxy_hosts
 
     - name: Build hosts data from inventory proxy hosts
       ansible.builtin.set_fact:
-        px_manager_hosts_data: "{{ (px_manager_hosts_data | default([])) + [{'host': item.value.http_domain, 'code': item.value.country_code, 'title': item.value.title}] }}"
+        px_manager_hosts_data: "{{ (px_manager_hosts_data | default([])) + [{'host': item.value.http_domain, 'code': item.value.country_code, 'title': item.value.title, 'selected': item.key == selected_proxy}] }}"
       loop: "{{ proxy_hosts | dict2items }}"
 
     - name: Install build prerequisites
