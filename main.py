@@ -968,7 +968,7 @@ async def run_ping(host: str) -> dict[str, object]:
             icmplib.async_ping(
                 host,
                 count=4,
-                interval=0.2,
+                interval=0.2, # type: ignore
                 timeout=2,
                 privileged=True,
             ),
