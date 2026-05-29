@@ -54,7 +54,7 @@ input {
   box-sizing: border-box;
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, CanvasText 25%, Canvas);
+  border: 1px solid #c7c7c7;
   border-radius: 6px;
   font: inherit;
   background: Canvas;
@@ -138,7 +138,7 @@ button,
   padding: 10px 12px;
   border-radius: 6px;
   color: #1769aa;
-  background: color-mix(in srgb, #1769aa 8%, Canvas);
+  background: #edf5fc;
   overflow-wrap: anywhere;
 }
 
@@ -159,5 +159,15 @@ button,
   .home-layout,
   .home-layout.has-content {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  input {
+    border-color: #555;
+  }
+
+  .tg-links a {
+    background: #132c40;
   }
 }

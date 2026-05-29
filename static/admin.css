@@ -39,7 +39,7 @@ textarea {
   min-height: 180px;
   resize: vertical;
   padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, CanvasText 25%, Canvas);
+  border: 1px solid #c7c7c7;
   border-radius: 6px;
   font: inherit;
   background: Canvas;
@@ -60,7 +60,7 @@ button {
 
 .hint {
   margin: 0;
-  color: color-mix(in srgb, CanvasText 65%, Canvas);
+  color: #5f6368;
   font-size: 13px;
 }
 
@@ -89,12 +89,12 @@ button {
 .bans th,
 .bans td {
   padding: 8px 0;
-  border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, Canvas);
+  border-bottom: 1px solid #d8d8d8;
   text-align: left;
 }
 
 .empty {
-  color: color-mix(in srgb, CanvasText 65%, Canvas);
+  color: #5f6368;
 }
 
 .nav {
@@ -103,4 +103,20 @@ button {
 
 .nav a {
   color: #1769aa;
+}
+
+@media (prefers-color-scheme: dark) {
+  textarea {
+    border-color: #555;
+  }
+
+  .hint,
+  .empty {
+    color: #b8bec5;
+  }
+
+  .bans th,
+  .bans td {
+    border-bottom-color: #444;
+  }
 }
