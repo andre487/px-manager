@@ -20,6 +20,8 @@ SESSION_TTL_SECONDS = 30 * 60
 SESSION_CLEANUP_INTERVAL_MS = 60 * 1000
 SESSION_COOKIE_NAME = "session"
 LOGIN_FAILURE_LIMIT = 5
+AUTH_FAILURE_LIMIT = 20
+FAILURE_WINDOW_SECONDS = 60 * 60
 BAN_TTL_SECONDS = 3 * 60 * 60
 BAN_CLEANUP_INTERVAL_MS = 60 * 1000
 MESSAGE_HTML_CACHE: dict[str, str] = {}
@@ -125,10 +127,11 @@ class Ban:
 
 
 class BanStore:
-    def __init__(self, failure_limit: int, ban_ttl_seconds: int):
-        self._failure_limit = failure_limit
+    def __init__(self, ban_ttl_seconds: int, failure_window_seconds: int):
         self._ban_ttl_seconds = ban_ttl_seconds
-        self._failures: dict[str, int] = {}
+        self._failure_window_seconds = failure_window_seconds
+        self._login_failures: dict[str, list[float]] = {}
+        self._auth_failures: dict[str, list[float]] = {}
         self._bans: dict[str, Ban] = {}
 
     def is_banned(self, ip: str) -> bool:
@@ -142,23 +145,42 @@ class BanStore:
 
         return True
 
-    def record_failure(self, ip: str) -> None:
+    def record_login_failure(self, ip: str) -> None:
+        self._record_failure(self._login_failures, ip, LOGIN_FAILURE_LIMIT)
+
+    def record_auth_failure(self, ip: str) -> None:
+        self._record_failure(self._auth_failures, ip, AUTH_FAILURE_LIMIT)
+
+    def _record_failure(
+        self,
+        failures_by_ip: dict[str, list[float]],
+        ip: str,
+        failure_limit: int,
+    ) -> None:
         if self.is_banned(ip):
             return
 
-        failures = self._failures.get(ip, 0) + 1
-        if failures >= self._failure_limit:
+        now = time.time()
+        failures = [
+            failure_time
+            for failure_time in failures_by_ip.get(ip, [])
+            if failure_time > now - self._failure_window_seconds
+        ]
+        failures.append(now)
+
+        if len(failures) >= failure_limit:
             self._bans[ip] = Ban(
                 ip=ip,
-                expires_at=time.time() + self._ban_ttl_seconds,
+                expires_at=now + self._ban_ttl_seconds,
             )
-            self._failures.pop(ip, None)
+            self._login_failures.pop(ip, None)
+            self._auth_failures.pop(ip, None)
             return
 
-        self._failures[ip] = failures
+        failures_by_ip[ip] = failures
 
     def record_success(self, ip: str) -> None:
-        self._failures.pop(ip, None)
+        self._login_failures.pop(ip, None)
 
     def active_bans(self) -> list[Ban]:
         self.cleanup_expired()
@@ -166,13 +188,33 @@ class BanStore:
 
     def delete(self, ip: str) -> None:
         self._bans.pop(ip, None)
-        self._failures.pop(ip, None)
+        self._login_failures.pop(ip, None)
+        self._auth_failures.pop(ip, None)
 
     def cleanup_expired(self) -> None:
         now = time.time()
         expired_ips = [ip for ip, ban in self._bans.items() if ban.expires_at <= now]
         for ip in expired_ips:
             self.delete(ip)
+
+        self._cleanup_failures(self._login_failures, now)
+        self._cleanup_failures(self._auth_failures, now)
+
+    def _cleanup_failures(
+        self,
+        failures_by_ip: dict[str, list[float]],
+        now: float,
+    ) -> None:
+        for ip, failures in list(failures_by_ip.items()):
+            recent_failures = [
+                failure_time
+                for failure_time in failures
+                if failure_time > now - self._failure_window_seconds
+            ]
+            if recent_failures:
+                failures_by_ip[ip] = recent_failures
+            else:
+                failures_by_ip.pop(ip, None)
 
 
 class BaseHandler(tornado.web.RequestHandler):
@@ -220,7 +262,7 @@ class BaseHandler(tornado.web.RequestHandler):
         if real_ip:
             return real_ip.strip()
 
-        return self.request.remote_ip
+        return self.request.remote_ip # type: ignore
 
     @property
     def cors_allowed_origins(self) -> set[str]:
@@ -266,6 +308,16 @@ class BaseHandler(tornado.web.RequestHandler):
 
         return None
 
+    def require_authenticated_credentials(self) -> tuple[str, str] | None:
+        credentials = self.get_authenticated_credentials()
+        if credentials is not None:
+            return credentials
+
+        self.ban_store.record_auth_failure(self.client_ip)
+        self.set_status(401)
+        self.finish({"error": "authentication required"})
+        return None
+
 
 class IndexHandler(BaseHandler):
     def get(self):
@@ -309,7 +361,7 @@ class IndexHandler(BaseHandler):
             return
 
         if not self.password_store.verify(username, password):
-            self.ban_store.record_failure(client_ip)
+            self.ban_store.record_login_failure(client_ip)
             self.set_status(401)
             self.render(
                 "index.html",
@@ -391,10 +443,9 @@ class ApiHandler(BaseHandler):
         if self.request.method == "OPTIONS":
             return
 
-        self.authenticated_credentials = self.get_authenticated_credentials()
+        self.authenticated_credentials = self.require_authenticated_credentials()
         if self.authenticated_credentials is None:
-            self.set_status(401)
-            self.finish({"error": "authentication required"})
+            return
 
     def get(self):
         self.write(
@@ -410,10 +461,9 @@ class ProxyListGenerateHandler(BaseHandler):
         if self.request.method == "OPTIONS":
             return
 
-        self.authenticated_credentials = self.get_authenticated_credentials()
+        self.authenticated_credentials = self.require_authenticated_credentials()
         if self.authenticated_credentials is None:
-            self.set_status(401)
-            self.finish({"error": "authentication required"})
+            return
 
     def get(self):
         username, password = self.authenticated_credentials  # type: ignore
@@ -449,10 +499,9 @@ class FoxyProxyGenerateHandler(BaseHandler):
         if self.request.method == "OPTIONS":
             return
 
-        self.authenticated_credentials = self.get_authenticated_credentials()
+        self.authenticated_credentials = self.require_authenticated_credentials()
         if self.authenticated_credentials is None:
-            self.set_status(401)
-            self.finish({"error": "authentication required"})
+            return
 
     def get(self):
         username, password = self.authenticated_credentials  # type: ignore
@@ -711,7 +760,7 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
     admin_user = read_optional_text(data_dir / "admin.txt") or None
 
     session_store = SessionStore(SESSION_TTL_SECONDS)
-    ban_store = BanStore(LOGIN_FAILURE_LIMIT, BAN_TTL_SECONDS)
+    ban_store = BanStore(BAN_TTL_SECONDS, FAILURE_WINDOW_SECONDS)
     return tornado.web.Application(
         [
             (r"/", IndexHandler),
