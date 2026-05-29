@@ -1,5 +1,6 @@
 import html
 import hashlib
+import asyncio
 import json
 import logging
 import pathlib
@@ -27,6 +28,7 @@ SESSION_TTL_SECONDS = 30 * 60
 SESSION_CLEANUP_INTERVAL_MS = 60 * 1000
 SESSION_COOKIE_NAME = "session"
 TLS_FINGERPRINT_TTL_SECONDS = 6 * 60 * 60
+HEALTH_CACHE_TTL_SECONDS = 25
 LOG_MAX_BYTES = 100 * 1024 * 1024
 LOG_BACKUP_COUNT = 1
 LOGIN_FAILURE_LIMIT = 5
@@ -35,11 +37,17 @@ FAILURE_WINDOW_SECONDS = 60 * 60
 BAN_TTL_SECONDS = 3 * 60 * 60
 BAN_CLEANUP_INTERVAL_MS = 60 * 1000
 MESSAGE_HTML_CACHE: dict[str, str] = {}
+HEALTH_RESULT_CACHE: dict[tuple[str, str], tuple[float, dict[str, object]]] = {}
 LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 AUTH_LOG = logging.getLogger("px_manager.auth")
 BAN_LOG = logging.getLogger("px_manager.ban")
+PING_PACKET_LOSS_RE = re.compile(r"(\d+(?:\.\d+)?)%\s+packet loss")
+PING_RTT_RE = re.compile(
+    r"(?:rtt|round-trip)[^=]*=\s*"
+    r"(?P<min>\d+(?:\.\d+)?)/(?P<avg>\d+(?:\.\d+)?)/(?P<max>\d+(?:\.\d+)?)"
+)
 
 cur_dir = pathlib.Path.cwd()
 
@@ -569,6 +577,16 @@ class DocHandler(BaseHandler):
         self.render("doc.html")
 
 
+class HealthPageHandler(BaseHandler):
+    def prepare(self):
+        if self.current_user is None:
+            self.redirect("/")
+            raise tornado.web.Finish()
+
+    def get(self):
+        self.render("health.html", hosts_data=self.hosts_data)
+
+
 class ApiHandler(BaseHandler):
     def prepare(self):
         self.authenticated_credentials = self.require_authenticated_credentials()
@@ -582,6 +600,204 @@ class ApiHandler(BaseHandler):
                 "user": self.authenticated_credentials[0],  # type: ignore
             }
         )
+
+
+class HealthConnectHandler(BaseHandler):
+    def prepare(self):
+        self.authenticated_credentials = self.require_authenticated_credentials()
+        if self.authenticated_credentials is None:
+            return
+
+    async def get(self):
+        host_data = self.get_allowed_health_host()
+        if host_data is None:
+            return
+
+        host = host_data["host"]
+        cached_result = get_cached_health_result("connect", host)
+        if cached_result is not None:
+            self.write(cached_result)
+            return
+
+        result: dict[str, object] = {
+            "ok": False,
+            "host": host,
+            "port": None,
+            "status": "error",
+            "error": None,
+        }
+
+        writer: asyncio.StreamWriter | None = None
+        try:
+            port = get_host_port(host_data)
+            result["port"] = port
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port),
+                timeout=2,
+            )
+        except Exception as error:
+            result["error"] = str(error) or error.__class__.__name__
+        else:
+            result["ok"] = True
+            result["status"] = "connected"
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+
+        set_cached_health_result("connect", host, result)
+        self.write(result)
+
+    def get_allowed_health_host(self) -> dict | None:
+        host = self.get_query_argument("host", "")
+        host_data = find_host_data(self.hosts_data, host)
+        if host_data is None:
+            self.set_status(400)
+            self.finish({"error": "host is not allowed"})
+            return None
+        return host_data
+
+
+class HealthHeadHandler(BaseHandler):
+    def prepare(self):
+        self.authenticated_credentials = self.require_authenticated_credentials()
+        if self.authenticated_credentials is None:
+            return
+
+    async def get(self):
+        host_data = self.get_allowed_health_host()
+        if host_data is None:
+            return
+
+        host = host_data["host"]
+        cached_result = get_cached_health_result("proxy_request", host)
+        if cached_result is not None:
+            self.write(cached_result)
+            return
+
+        result: dict[str, object] = {
+            "ok": False,
+            "host": host,
+            "port": None,
+            "status": "error",
+            "status_code": None,
+            "status_line": None,
+            "error": None,
+        }
+
+        writer: asyncio.StreamWriter | None = None
+        try:
+            port = get_host_port(host_data)
+            result["port"] = port
+            ssl_context = ssl.create_default_context()
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(
+                    host,
+                    port,
+                    ssl=ssl_context,
+                    server_hostname=host,
+                ),
+                timeout=2,
+            )
+            request = (
+                f"CONNECT example.com:443 HTTP/1.1\r\n"
+                f"Host: example.com:443\r\n"
+                f"Connection: close\r\n\r\n"
+            )
+            writer.write(request.encode("ascii"))
+            await asyncio.wait_for(writer.drain(), timeout=2)
+            status_line_bytes = await asyncio.wait_for(
+                _reader.readline(),
+                timeout=5,
+            )
+            status_line = status_line_bytes.decode("iso-8859-1", "replace").strip()
+            result["status_line"] = status_line
+            status_match = re.match(
+                r"^HTTP/\d(?:\.\d)?\s+(\d{3})(?:\s+(.*))?$",
+                status_line,
+            )
+            if status_match is None:
+                raise ValueError("proxy returned a non-HTTP response")
+
+            status_code = int(status_match.group(1))
+            result["status_code"] = status_code
+            result["status"] = "responded"
+            if status_code == 407:
+                result["ok"] = True
+            elif status_code == 200:
+                result["error"] = "proxy allowed CONNECT without authentication"
+            else:
+                reason = status_match.group(2) or "unexpected proxy response"
+                result["error"] = f"HTTP {status_code} {reason}"
+        except Exception as error:
+            result["error"] = str(error) or error.__class__.__name__
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+
+        set_cached_health_result("proxy_request", host, result)
+        self.write(result)
+
+    def get_allowed_health_host(self) -> dict | None:
+        host = self.get_query_argument("host", "")
+        host_data = find_host_data(self.hosts_data, host)
+        if host_data is None:
+            self.set_status(400)
+            self.finish({"error": "host is not allowed"})
+            return None
+        return host_data
+
+
+class HealthPingHandler(BaseHandler):
+    def prepare(self):
+        self.authenticated_credentials = self.require_authenticated_credentials()
+        if self.authenticated_credentials is None:
+            return
+
+    async def get(self):
+        host_data = self.get_allowed_health_host()
+        if host_data is None:
+            return
+
+        host = host_data["host"]
+        cached_result = get_cached_health_result("ping", host)
+        if cached_result is not None:
+            self.write(cached_result)
+            return
+
+        result: dict[str, object] = {
+            "ok": False,
+            "host": host,
+            "status": "error",
+            "packet_loss_percent": None,
+            "rtt_avg_ms": None,
+            "error": None,
+        }
+
+        try:
+            ping_result = await run_ping(host)
+            result.update(ping_result)
+        except Exception as error:
+            result["error"] = str(error) or error.__class__.__name__
+
+        set_cached_health_result("ping", host, result)
+        self.write(result)
+
+    def get_allowed_health_host(self) -> dict | None:
+        host = self.get_query_argument("host", "")
+        host_data = find_host_data(self.hosts_data, host)
+        if host_data is None:
+            self.set_status(400)
+            self.finish({"error": "host is not allowed"})
+            return None
+        return host_data
 
 
 class ProxyListGenerateHandler(BaseHandler):
@@ -711,6 +927,116 @@ class ShadowrocketGenerateHandler(BaseHandler):
             f'attachment; filename="{build_shadowrocket_filename(username)}"',
         )
         self.write(config)
+
+
+def find_host_data(hosts_data: list[dict], host: str) -> dict | None:
+    if not host:
+        return None
+
+    for item in hosts_data:
+        if item.get("host") == host:
+            return item
+
+    return None
+
+
+def get_host_port(host_data: dict, default_port: int = 443) -> int:
+    return int(host_data.get("port", default_port))
+
+
+def get_cached_health_result(check_name: str, host: str) -> dict[str, object] | None:
+    key = (check_name, host)
+    cached = HEALTH_RESULT_CACHE.get(key)
+    if cached is None:
+        return None
+
+    cached_at, result = cached
+    if time.monotonic() - cached_at >= HEALTH_CACHE_TTL_SECONDS:
+        HEALTH_RESULT_CACHE.pop(key, None)
+        return None
+
+    return dict(result)
+
+
+def set_cached_health_result(
+    check_name: str,
+    host: str,
+    result: dict[str, object],
+) -> None:
+    HEALTH_RESULT_CACHE[(check_name, host)] = (time.monotonic(), dict(result))
+
+
+async def run_ping(host: str) -> dict[str, object]:
+    command = build_ping_command(host)
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=12)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.communicate()
+        raise TimeoutError("ping timed out")
+
+    output = "\n".join(
+        part.decode("utf-8", "replace")
+        for part in (stdout, stderr)
+        if part
+    )
+    packet_loss = parse_ping_packet_loss(output)
+    rtt_avg = parse_ping_rtt_avg(output)
+    result: dict[str, object] = {
+        "ok": process.returncode == 0 and packet_loss is not None and packet_loss < 100,
+        "status": "responded",
+        "packet_loss_percent": packet_loss,
+        "rtt_avg_ms": rtt_avg,
+        "error": None,
+    }
+
+    if packet_loss is None:
+        result["ok"] = False
+        result["status"] = "error"
+        result["error"] = "failed to parse ping output"
+    elif packet_loss >= 100:
+        result["status"] = "error"
+        result["error"] = "100% packet loss"
+    elif process.returncode != 0:
+        result["error"] = (
+            extract_ping_error(output) or f"ping exited with {process.returncode}"
+        )
+
+    return result
+
+
+def build_ping_command(host: str) -> list[str]:
+    if sys.platform == "darwin":
+        return ["ping", "-n", "-c", "4", "-W", "2000", host]
+
+    return ["ping", "-n", "-c", "4", "-W", "2", host]
+
+
+def parse_ping_packet_loss(output: str) -> float | None:
+    match = PING_PACKET_LOSS_RE.search(output)
+    if match is None:
+        return None
+    return float(match.group(1))
+
+
+def parse_ping_rtt_avg(output: str) -> float | None:
+    match = PING_RTT_RE.search(output)
+    if match is None:
+        return None
+    return float(match.group("avg"))
+
+
+def extract_ping_error(output: str) -> str | None:
+    for line in output.splitlines():
+        line = line.strip()
+        if line and not line.startswith(("PING ", "---", "round-trip", "rtt ")):
+            return line
+    return None
 
 
 def build_proxy_list_line(
@@ -1001,12 +1327,13 @@ def build_csp_header() -> str:
         [
             "default-src 'self'",
             "base-uri 'none'",
+            "connect-src 'self'",
             "frame-ancestors 'none'",
             "form-action 'self'",
             "img-src 'self'",
             "navigate-to 'self' tg:",
             "object-src 'none'",
-            "script-src 'none'",
+            "script-src 'self'",
             "style-src 'self'",
         ]
     )
@@ -1199,10 +1526,14 @@ def make_app(
             (r"/", IndexHandler),
             (r"/admin", AdminHandler),
             (r"/doc", DocHandler),
+            (r"/health", HealthPageHandler),
             (r"/logout", LogoutHandler),
             (r"/favicon.ico", FaviconHandler),
             (r"/robots.txt", RobotsHandler),
             (r"/api", ApiHandler),
+            (r"/api/health/connect", HealthConnectHandler),
+            (r"/api/health/head", HealthHeadHandler),
+            (r"/api/health/ping", HealthPingHandler),
             (r"/api/generate/proxy-list", ProxyListGenerateHandler),
             (r"/api/generate/super-proxy", SuperProxyGenerateHandler),
             (r"/api/generate/foxy-proxy", FoxyProxyGenerateHandler),

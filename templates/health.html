@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="{{ static_url("favicon.ico") }}" sizes="any">
+  <link rel="stylesheet" href="{{ static_url("common.css") }}">
+  <link rel="stylesheet" href="{{ static_url("health.css") }}">
+  <script src="{{ static_url("health.js") }}" defer></script>
+  <title>Проверка прокси - PX Manager 487</title>
+</head>
+<body class="health-page">
+  <div class="health-error" data-health-error hidden>
+    <span data-health-error-text></span>
+    <button class="health-error-close" type="button" data-health-error-close aria-label="Закрыть сообщение об ошибке">×</button>
+  </div>
+  <main>
+    <h1>Проверка прокси</h1>
+
+    <section class="health-list" aria-label="Список прокси">
+      {% if not hosts_data %}
+        <p class="empty health-empty">Прокси не настроены.</p>
+      {% end %}
+      {% for item in hosts_data %}
+        <article class="health-row" data-host="{{ escape(item["host"]) }}">
+          <div class="health-proxy">
+            <h2>
+              {% if item.get("title") %}
+                {{ escape(item.get("title")) }}
+              {% elif item.get("code") %}
+                {{ escape(item.get("code")) }}
+              {% else %}
+                {{ escape(item["host"]) }}
+              {% end %}
+            </h2>
+            <p>{{ escape(item["host"]) }}</p>
+          </div>
+          <div class="health-checks" aria-label="Статусы проверки">
+            <div class="health-check">
+              <span class="health-label">Connect</span>
+              <span class="health-status status-loading" data-check="connect">Проверяется</span>
+            </div>
+            <div class="health-check">
+              <span class="health-label">Request</span>
+              <span class="health-status status-loading" data-check="head">Проверяется</span>
+            </div>
+            <div class="health-check">
+              <span class="health-label">Ping</span>
+              <span class="health-status status-loading" data-check="ping">Проверяется</span>
+            </div>
+          </div>
+        </article>
+      {% end %}
+    </section>
+
+    <div class="nav">
+      <a href="/">На главную</a>
+    </div>
+  </main>
+</body>
+</html>
