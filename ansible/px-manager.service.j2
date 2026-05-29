@@ -10,6 +10,7 @@ Group={{ px_manager_group }}
 WorkingDirectory={{ px_manager_home }}
 EnvironmentFile={{ px_manager_cookie_env }}
 ExecStart={{ px_manager_bin_dir }}/px-manager --data-dir {{ px_manager_data_dir }} --host 127.0.0.1 --port {{ px_manager_service_port }}{% for origin in px_manager_cors_origins %} --cors-origin {{ origin | quote }}{% endfor %}
+
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
