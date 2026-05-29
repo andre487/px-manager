@@ -1,11 +1,15 @@
 import html
+import hashlib
 import json
 import pathlib
 import re
 import secrets
+import socket
+import ssl
 import sys
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from urllib.parse import quote, urlencode, urlparse
 
 import click
@@ -19,6 +23,7 @@ from argon2.exceptions import Argon2Error, VerificationError
 SESSION_TTL_SECONDS = 30 * 60
 SESSION_CLEANUP_INTERVAL_MS = 60 * 1000
 SESSION_COOKIE_NAME = "session"
+TLS_FINGERPRINT_TTL_SECONDS = 6 * 60 * 60
 LOGIN_FAILURE_LIMIT = 5
 AUTH_FAILURE_LIMIT = 20
 FAILURE_WINDOW_SECONDS = 60 * 60
@@ -504,6 +509,35 @@ class ProxyListGenerateHandler(BaseHandler):
         self.write("\n".join(lines) + "\n")
 
 
+class SuperProxyGenerateHandler(BaseHandler):
+    def prepare(self):
+        self.authenticated_credentials = self.require_authenticated_credentials()
+        if self.authenticated_credentials is None:
+            return
+
+    def get(self):
+        username, password = self.authenticated_credentials  # type: ignore
+        default_port = self.get_query_argument("port", "443")
+        try:
+            config = build_super_proxy_config(
+                self.hosts_data,
+                username=username,
+                password=password,
+                default_port=default_port,
+            )
+        except (OSError, ssl.SSLError, RuntimeError) as error:
+            self.set_status(502)
+            self.finish({"error": f"failed to fetch TLS fingerprint: {error}"})
+            return
+
+        self.set_header("Content-Type", "text/plain; charset=utf-8")
+        self.set_header(
+            "Content-Disposition",
+            f'attachment; filename="{build_super_proxy_filename(username)}"',
+        )
+        self.write(config)
+
+
 class FoxyProxyGenerateHandler(BaseHandler):
     def prepare(self):
         self.authenticated_credentials = self.require_authenticated_credentials()
@@ -601,6 +635,75 @@ def build_proxy_list_filename(username: str) -> str:
     if not safe_username:
         safe_username = "user"
     return f"{safe_username}-proxy-list.txt"
+
+
+def build_super_proxy_config(
+    hosts_data: list[dict],
+    *,
+    username: str,
+    password: str,
+    default_port: str,
+) -> str:
+    lines = ["# superproxy:proxylist:v1"]
+    lines.extend(
+        build_super_proxy_line(
+            item,
+            username=username,
+            password=password,
+            default_port=default_port,
+            is_default=index == 0,
+        )
+        for index, item in enumerate(hosts_data)
+    )
+    return "\n".join(lines) + "\n"
+
+
+def build_super_proxy_line(
+    host_data: dict,
+    *,
+    username: str,
+    password: str,
+    default_port: str,
+    is_default: bool,
+) -> str:
+    host = host_data["host"]
+    port = str(host_data.get("port", default_port))
+    title = str(host_data.get("code") or host_data.get("title") or host)
+    fingerprint = get_tls_fingerprint(host, int(port))
+    fingerprint_query = f"?fingerprint={quote(fingerprint, safe='')}"
+    default_marker = " *" if is_default else ""
+    return (
+        f"https://{quote(username, safe='')}:"
+        f"{quote(password, safe='')}@{host}:{port}{fingerprint_query} "
+        f'"{escape_super_proxy_title(title)}"{default_marker}'
+    )
+
+
+def get_tls_fingerprint(host: str, port: int) -> str:
+    ttl_bucket = int(time.time() // TLS_FINGERPRINT_TTL_SECONDS)
+    return get_cached_tls_fingerprint(host, port, ttl_bucket)
+
+
+@lru_cache(maxsize=256)
+def get_cached_tls_fingerprint(host: str, port: int, ttl_bucket: int) -> str:
+    context = ssl.create_default_context()
+    with socket.create_connection((host, port), timeout=10) as raw_socket:
+        with context.wrap_socket(raw_socket, server_hostname=host) as tls_socket:
+            certificate_der = tls_socket.getpeercert(binary_form=True)
+    if certificate_der is None:
+        raise RuntimeError(f"TLS certificate is unavailable for {host}:{port}")
+    return hashlib.sha1(certificate_der).hexdigest()
+
+
+def escape_super_proxy_title(title: str) -> str:
+    return title.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def build_super_proxy_filename(username: str) -> str:
+    safe_username = re.sub(r"[^A-Za-z0-9_.-]+", "_", username).strip("._-")
+    if not safe_username:
+        safe_username = "user"
+    return f"{safe_username}-super-proxy.txt"
 
 
 def build_foxy_proxy_config(
@@ -891,6 +994,7 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
             (r"/robots.txt", RobotsHandler),
             (r"/api", ApiHandler),
             (r"/api/generate/proxy-list", ProxyListGenerateHandler),
+            (r"/api/generate/super-proxy", SuperProxyGenerateHandler),
             (r"/api/generate/foxy-proxy", FoxyProxyGenerateHandler),
             (r"/api/generate/shadowrocket", ShadowrocketGenerateHandler),
         ],
