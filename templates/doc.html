@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="{{ static_url("admin.css") }}">
+  <title>Документация - PX Manager 487</title>
+</head>
+<body>
+  <main>
+    <h1>Документация</h1>
+
+    <section class="doc-section">
+      <h2>Браузерное расширение FoxyProxy</h2>
+      <ol>
+        <li>Установите FoxyProxy Standard из магазина расширений вашего браузера.</li>
+        <li>Вернитесь в PX Manager и скачайте <strong>FoxyProxy.json</strong>.</li>
+        <li>Откройте настройки расширения FoxyProxy.</li>
+        <li>Откройте раздел <strong>Import</strong>, выберите импорт из локального файла и укажите скачанный JSON-файл.</li>
+        <li>Сохраните импортированные настройки, если FoxyProxy попросит подтверждение.</li>
+        <li>Через кнопку FoxyProxy на панели браузера выберите импортированный профиль прокси.</li>
+      </ol>
+    </section>
+
+    <section class="doc-section">
+      <h2>Super Proxy для Android</h2>
+      <ol>
+        <li>Установите Super Proxy из Google Play.</li>
+        <li>Вернитесь в PX Manager и скачайте <strong>ProxyList.txt</strong>.</li>
+        <li>Откройте Super Proxy и используйте импорт профилей или списка прокси.</li>
+        <li>Выберите скачанный файл <strong>ProxyList.txt</strong>.</li>
+        <li>Выберите импортированный профиль прокси и запустите подключение.</li>
+        <li>Если Android запросит разрешение VPN, разрешите его: так Super Proxy сможет направлять трафик приложений через выбранный прокси.</li>
+      </ol>
+    </section>
+
+    <section class="doc-section">
+      <h2>Если не работает</h2>
+      <ul>
+        <li>Если импорт не прошёл, скачайте конфиг заново и повторите импорт со свежим файлом.</li>
+        <li>Если прокси не подключается, попробуйте другой импортированный профиль из того же списка.</li>
+        <li>Если трафик браузера не меняется, проверьте, что FoxyProxy включён и выбран импортированный профиль.</li>
+      </ul>
+    </section>
+
+    <div class="nav">
+      <a href="/">На главную</a>
+    </div>
+  </main>
+</body>
+</html>

@@ -81,6 +81,26 @@ button {
   font-size: 20px;
 }
 
+.doc-section {
+  margin-top: 24px;
+}
+
+.doc-section h2 {
+  margin: 0 0 12px;
+  font-size: 20px;
+}
+
+.doc-section ol,
+.doc-section ul {
+  margin: 0;
+  padding-left: 24px;
+}
+
+.doc-section li {
+  margin: 8px 0;
+  line-height: 1.45;
+}
+
 .bans table {
   width: 100%;
   border-collapse: collapse;

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -14,23 +14,24 @@
       {% if current_user %}
         <h1>PX Manager 487</h1>
         <div class="session">
-          <span>Signed in as <strong>{{ escape(current_user) }}</strong></span>
+          <span>Вы вошли как <strong>{{ escape(current_user) }}</strong></span>
           <form class="logout" method="post" action="/logout">
             {% module xsrf_form_html() %}
-            <button type="submit">Logout</button>
+            <button type="submit">Выйти</button>
           </form>
         </div>
         <div class="download-group">
-          <h2>Download</h2>
+          <h2>Скачать</h2>
           <div class="actions">
             <a class="button" href="/api/generate/proxy-list" download="{{ escape(current_user) }}-proxy-list.txt">ProxyList.txt</a>
             <a class="button" href="/api/generate/foxy-proxy" download="{{ escape(current_user) }}-foxy-proxy.json">FoxyProxy.json</a>
           </div>
         </div>
-        {% if is_admin %}<a class="button admin-link" href="/admin">Admin</a>{% end %}
+        <a class="button admin-link" href="/doc">Документация</a>
+        {% if is_admin %}<a class="button admin-link" href="/admin">Админка</a>{% end %}
         {% if tg_proxies %}
           <section class="tg-proxies">
-            <h2>Telegram proxies</h2>
+            <h2>Прокси для Telegram</h2>
             <div class="tg-links">
               {% for tg_proxy in tg_proxies %}
                 <a href="{{ tg_proxy }}">{{ tg_proxy }}</a>
@@ -44,14 +45,14 @@
         <form method="post" action="/">
           {% module xsrf_form_html() %}
           <label>
-            Login
+            Логин
             <input name="username" autocomplete="username" autofocus required>
           </label>
           <label>
-            Password
+            Пароль
             <input name="password" type="password" autocomplete="current-password" required>
           </label>
-          <button type="submit">Login</button>
+          <button type="submit">Войти</button>
         </form>
       {% end %}
       </section>

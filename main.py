@@ -322,7 +322,7 @@ class IndexHandler(BaseHandler):
             self.set_status(403)
             self.render(
                 "index.html",
-                error="Too many failed login attempts. Try again later.",
+                error="Слишком много неудачных попыток входа. Попробуйте позже.",
                 message="",
                 message_html="",
                 tg_proxies=[],
@@ -349,7 +349,7 @@ class IndexHandler(BaseHandler):
             self.set_status(403)
             self.render(
                 "index.html",
-                error="Too many failed login attempts. Try again later.",
+                error="Слишком много неудачных попыток входа. Попробуйте позже.",
                 message="",
                 message_html="",
                 tg_proxies=[],
@@ -362,7 +362,7 @@ class IndexHandler(BaseHandler):
             self.set_status(401)
             self.render(
                 "index.html",
-                error="Invalid login or password",
+                error="Неверный логин или пароль",
                 message="",
                 message_html="",
                 tg_proxies=[],
@@ -419,7 +419,7 @@ class AdminHandler(BaseHandler):
 
         if not self.is_admin:
             self.set_status(403)
-            self.finish("Forbidden")
+            self.finish("Доступ запрещён")
 
     def get(self):
         self.render(
@@ -442,6 +442,16 @@ class AdminHandler(BaseHandler):
             active_bans=self.ban_store.active_bans(),
             format_timestamp=format_timestamp,
         )
+
+
+class DocHandler(BaseHandler):
+    def prepare(self):
+        if self.current_user is None:
+            self.redirect("/")
+            raise tornado.web.Finish()
+
+    def get(self):
+        self.render("doc.html")
 
 
 class ApiHandler(BaseHandler):
@@ -762,6 +772,7 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
         [
             (r"/", IndexHandler),
             (r"/admin", AdminHandler),
+            (r"/doc", DocHandler),
             (r"/logout", LogoutHandler),
             (r"/favicon.ico", FaviconHandler),
             (r"/robots.txt", RobotsHandler),

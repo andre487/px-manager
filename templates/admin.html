@@ -1,41 +1,41 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="/favicon.ico" sizes="any">
   <link rel="stylesheet" href="{{ static_url("admin.css") }}">
-  <title>Admin - px-manager</title>
+  <title>Админка - PX Manager 487</title>
 </head>
 <body>
   <main>
-    <h1>Admin</h1>
-    {% if saved %}<p class="saved">Message saved.</p>{% end %}
+    <h1>Админка</h1>
+    {% if saved %}<p class="saved">Сообщение сохранено.</p>{% end %}
     <form method="post" action="/admin">
       {% module xsrf_form_html() %}
       <label>
-        Homepage message
+        Сообщение на главной
         <textarea name="message" autofocus>{{ message }}</textarea>
       </label>
-      <p class="hint">Markdown: **bold**, *italic*, [link](https://example.com).</p>
+      <p class="hint">Markdown: **жирный**, *курсив*, [ссылка](https://example.com).</p>
       <label>
-        Telegram proxies
+        Прокси для Telegram
         <textarea name="tg_proxies">{{ tg_proxies }}</textarea>
       </label>
-      <p class="hint">One tg:// URI per line.</p>
-      <button type="submit">Save message</button>
+      <p class="hint">Один URI вида tg:// на строку.</p>
+      <button type="submit">Сохранить</button>
     </form>
     <div class="nav">
-      <a href="/">Back to home</a>
+      <a href="/">На главную</a>
     </div>
     <section class="bans">
-      <h2>Active bans</h2>
+      <h2>Активные баны</h2>
       {% if active_bans %}
         <table>
           <thead>
             <tr>
               <th>IP</th>
-              <th>Expires at</th>
+              <th>Истекает</th>
             </tr>
           </thead>
           <tbody>
@@ -48,7 +48,7 @@
           </tbody>
         </table>
       {% else %}
-        <p class="empty">No active bans.</p>
+        <p class="empty">Активных банов нет.</p>
       {% end %}
     </section>
   </main>
