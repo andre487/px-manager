@@ -252,6 +252,84 @@ class BanStore:
                 failures_by_ip.pop(ip, None)
 
 
+class PersistentBanStore(BanStore):
+    def __init__(
+        self,
+        ban_ttl_seconds: int,
+        failure_window_seconds: int,
+        state_path: pathlib.Path,
+    ):
+        super().__init__(ban_ttl_seconds, failure_window_seconds)
+        self._state_path = state_path
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            data = json.loads(self._state_path.read_text())
+        except FileNotFoundError:
+            return
+        except json.JSONDecodeError as error:
+            BAN_LOG.error("ban_state_load_failed path=%s error=%s", self._state_path, error)
+            return
+
+        now = time.time()
+        if not isinstance(data, list):
+            BAN_LOG.error("ban_state_load_failed path=%s error=invalid_format", self._state_path)
+            return
+
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            ip = item.get("ip")
+            expires_at = item.get("expires_at")
+            if not isinstance(ip, str) or not isinstance(expires_at, (int, float)):
+                continue
+            if expires_at > now:
+                self._bans[ip] = Ban(ip=ip, expires_at=float(expires_at))
+
+        self.cleanup_expired()
+
+    def _save(self) -> None:
+        data = [
+            {"ip": ban.ip, "expires_at": ban.expires_at}
+            for ban in sorted(self._bans.values(), key=lambda item: item.ip)
+        ]
+        tmp_path = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        tmp_path.replace(self._state_path)
+
+    def _record_failure(
+        self,
+        failures_by_ip: dict[str, list[float]],
+        ip: str,
+        failure_limit: int,
+        *,
+        failure_type: str,
+    ) -> None:
+        before = set(self._bans)
+        super()._record_failure(
+            failures_by_ip,
+            ip,
+            failure_limit,
+            failure_type=failure_type,
+        )
+        if set(self._bans) != before:
+            self._save()
+
+    def delete(self, ip: str) -> None:
+        had_ban = ip in self._bans
+        super().delete(ip)
+        if had_ban:
+            self._save()
+
+    def cleanup_expired(self) -> None:
+        before = set(self._bans)
+        super().cleanup_expired()
+        if set(self._bans) != before:
+            self._save()
+
+
 class BaseHandler(tornado.web.RequestHandler):
     def set_default_headers(self):
         self.set_header("X-Content-Type-Options", "nosniff")
@@ -1101,12 +1179,21 @@ def get_access_log_username(handler: tornado.web.RequestHandler) -> str:
     return "-"
 
 
-def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Application:
-    hosts_data = json.loads((data_dir / "hosts.json").read_text())
-    admin_user = read_optional_text(data_dir / "admin.txt") or None
+def make_app(
+    data_dir: pathlib.Path,
+    config_dir: pathlib.Path,
+    state_dir: pathlib.Path,
+    cookie_secret: str,
+) -> tornado.web.Application:
+    hosts_data = json.loads((config_dir / "hosts.json").read_text())
+    admin_user = read_optional_text(config_dir / "admin.txt") or None
 
     session_store = SessionStore(SESSION_TTL_SECONDS)
-    ban_store = BanStore(BAN_TTL_SECONDS, FAILURE_WINDOW_SECONDS)
+    ban_store = PersistentBanStore(
+        BAN_TTL_SECONDS,
+        FAILURE_WINDOW_SECONDS,
+        state_dir / "bans.json",
+    )
     return PxManagerApplication(
         [
             (r"/", IndexHandler),
@@ -1131,7 +1218,7 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
         template_path=str(resource_path("templates")),
         data_dir=data_dir,
         admin_user=admin_user,
-        password_store=PasswordStore.from_file(data_dir / "passwd.json"),
+        password_store=PasswordStore.from_file(config_dir / "passwd.json"),
         hosts_data=hosts_data,
         session_store=session_store,
         ban_store=ban_store,
@@ -1151,6 +1238,17 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
     default=cur_dir / "data",
 )
 @click.option(
+    "--config-dir",
+    type=click.Path(
+        exists=True,
+        dir_okay=True,
+        file_okay=False,
+        path_type=pathlib.Path,
+    ),
+    default=cur_dir / "data",
+    help="Directory with hosts.json, admin.txt and passwd.json.",
+)
+@click.option(
     "--log-dir",
     type=click.Path(
         dir_okay=True,
@@ -1160,6 +1258,17 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
     default=cur_dir / "logs",
     show_default=True,
     help="Directory for access/auth/ban log files.",
+)
+@click.option(
+    "--state-dir",
+    type=click.Path(
+        dir_okay=True,
+        file_okay=False,
+        path_type=pathlib.Path,
+    ),
+    default=cur_dir / "state",
+    show_default=True,
+    help="Directory for persistent runtime state.",
 )
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=8888, show_default=True, type=int)
@@ -1175,7 +1284,9 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
 )
 def main(
     data_dir: pathlib.Path,
+    config_dir: pathlib.Path,
     log_dir: pathlib.Path,
+    state_dir: pathlib.Path,
     host: str,
     port: int,
     cors_origin: tuple[str, ...],
@@ -1185,7 +1296,7 @@ def main(
         cookie_secret = secrets.token_urlsafe(32)
 
     configure_logging(log_dir)
-    app = make_app(data_dir, cookie_secret)
+    app = make_app(data_dir, config_dir, state_dir, cookie_secret)
     app.settings["cors_allowed_origins"] = set(cors_origin)
     server = tornado.httpserver.HTTPServer(app)
     server.listen(port, address=host)

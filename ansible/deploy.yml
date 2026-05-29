@@ -7,8 +7,10 @@
     px_manager_user: px-manager
     px_manager_group: px-manager
     px_manager_home: /srv/px_manager
-    px_manager_bin_dir: "{{ px_manager_home }}/bin"
+    px_manager_bin_dir: /opt/px-manager/bin
+    px_manager_config_dir: /etc/px-manager
     px_manager_data_dir: "{{ px_manager_home }}/data"
+    px_manager_state_dir: /var/lib/px-manager
     px_manager_log_dir: /var/log/px-manager
     px_manager_build_dir: /tmp/px-manager-build
     px_manager_service_name: px-manager
@@ -16,7 +18,7 @@
     px_manager_cors_origins: []
     px_manager_uv_path: /usr/local/bin/uv
     px_manager_uv_installer: /tmp/uv-installer.sh
-    px_manager_cookie_env: "{{ px_manager_home }}/px-manager.env"
+    px_manager_cookie_env: "{{ px_manager_config_dir }}/px-manager.env"
     px_manager_source_files:
       - main.py
       - pyproject.toml
@@ -99,7 +101,15 @@
           owner: root
           group: "{{ px_manager_group }}"
           mode: "0750"
+        - path: "{{ px_manager_config_dir }}"
+          owner: root
+          group: "{{ px_manager_group }}"
+          mode: "0750"
         - path: "{{ px_manager_data_dir }}"
+          owner: "{{ px_manager_user }}"
+          group: "{{ px_manager_group }}"
+          mode: "0750"
+        - path: "{{ px_manager_state_dir }}"
           owner: "{{ px_manager_user }}"
           group: "{{ px_manager_group }}"
           mode: "0750"
@@ -187,7 +197,7 @@
           - run
           - python
           - "{{ px_manager_build_dir }}/ansible-scripts/generate_passwd.py"
-          - "{{ px_manager_data_dir }}/passwd.json"
+          - "{{ px_manager_config_dir }}/passwd.json"
         chdir: "{{ px_manager_build_dir }}"
         stdin: "{{ proxy_users | to_json }}"
       register: px_manager_passwd_json
@@ -197,29 +207,29 @@
     - name: Install passwd.json
       ansible.builtin.copy:
         content: "{{ px_manager_passwd_json.stdout }}\n"
-        dest: "{{ px_manager_data_dir }}/passwd.json"
-        owner: "{{ px_manager_user }}"
+        dest: "{{ px_manager_config_dir }}/passwd.json"
+        owner: root
         group: "{{ px_manager_group }}"
-        mode: "0600"
+        mode: "0640"
       no_log: true
       notify: Restart px-manager
 
     - name: Install hosts.json
       ansible.builtin.copy:
         content: "{{ px_manager_hosts_data | to_nice_json }}\n"
-        dest: "{{ px_manager_data_dir }}/hosts.json"
-        owner: "{{ px_manager_user }}"
+        dest: "{{ px_manager_config_dir }}/hosts.json"
+        owner: root
         group: "{{ px_manager_group }}"
-        mode: "0600"
+        mode: "0640"
       notify: Restart px-manager
 
     - name: Install admin.txt
       ansible.builtin.copy:
         content: "{{ admin_user }}\n"
-        dest: "{{ px_manager_data_dir }}/admin.txt"
-        owner: "{{ px_manager_user }}"
+        dest: "{{ px_manager_config_dir }}/admin.txt"
+        owner: root
         group: "{{ px_manager_group }}"
-        mode: "0600"
+        mode: "0640"
       notify: Restart px-manager
 
     - name: Ensure message.md exists
