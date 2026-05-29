@@ -12,6 +12,7 @@
     px_manager_build_dir: /tmp/px-manager-build
     px_manager_service_name: px-manager
     px_manager_service_port: 8888
+    px_manager_cors_origins: []
     px_manager_uv_path: /usr/local/bin/uv
     px_manager_uv_installer: /tmp/uv-installer.sh
     px_manager_cookie_env: "{{ px_manager_home }}/px-manager.env"

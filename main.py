@@ -1,4 +1,3 @@
-import base64
 import html
 import json
 import pathlib
@@ -177,6 +176,12 @@ class BanStore:
 
 
 class BaseHandler(tornado.web.RequestHandler):
+    def set_default_headers(self):
+        self.set_header("X-Content-Type-Options", "nosniff")
+        self.set_header("Referrer-Policy", "same-origin")
+        self.set_header("Content-Security-Policy", build_csp_header())
+        self.set_cors_headers()
+
     @property
     def password_store(self) -> PasswordStore:
         return self.application.settings["password_store"]
@@ -217,6 +222,31 @@ class BaseHandler(tornado.web.RequestHandler):
 
         return self.request.remote_ip
 
+    @property
+    def cors_allowed_origins(self) -> set[str]:
+        return self.application.settings["cors_allowed_origins"]
+
+    def set_cors_headers(self) -> None:
+        origin = self.request.headers.get("Origin")
+        if not origin or origin not in self.cors_allowed_origins:
+            return
+
+        self.set_header("Access-Control-Allow-Origin", origin)
+        self.set_header("Access-Control-Allow-Credentials", "true")
+        self.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.set_header("Access-Control-Allow-Headers", "Content-Type, X-XSRFToken")
+        self.set_header("Vary", "Origin")
+
+    def options(self):
+        origin = self.request.headers.get("Origin")
+        if origin and origin not in self.cors_allowed_origins:
+            self.set_status(403)
+            self.finish()
+            return
+
+        self.set_status(204)
+        self.finish()
+
     def get_current_user(self):
         session = self.get_session()
         if session is None:
@@ -229,31 +259,12 @@ class BaseHandler(tornado.web.RequestHandler):
             return None
         return self.session_store.get(tornado.escape.to_unicode(session_id))
 
-    def verify_basic_auth(self) -> tuple[str, str] | None:
-        auth_header = self.request.headers.get("Authorization", "")
-        auth_type, _, credentials = auth_header.partition(" ")
-        if auth_type.lower() != "basic" or not credentials:
-            return None
-
-        try:
-            decoded = base64.b64decode(credentials, validate=True).decode("utf-8")
-        except ValueError, UnicodeDecodeError:
-            return None
-
-        username, separator, password = decoded.partition(":")
-        if not separator:
-            return None
-
-        if self.password_store.verify(username, password):
-            return username, password
-        return None
-
     def get_authenticated_credentials(self) -> tuple[str, str] | None:
         session = self.get_session()
         if session is not None:
             return session.username, session.password
 
-        return self.verify_basic_auth()
+        return None
 
 
 class IndexHandler(BaseHandler):
@@ -319,7 +330,7 @@ class IndexHandler(BaseHandler):
 
 
 class LogoutHandler(BaseHandler):
-    def get(self):
+    def post(self):
         session_id = self.get_secure_cookie(SESSION_COOKIE_NAME)
         if session_id is not None:
             self.session_store.delete(tornado.escape.to_unicode(session_id))
@@ -329,6 +340,9 @@ class LogoutHandler(BaseHandler):
 
 
 class FaviconHandler(tornado.web.RequestHandler):
+    def set_default_headers(self):
+        self.set_header("X-Content-Type-Options", "nosniff")
+
     def get(self):
         self.set_header("Content-Type", "image/x-icon")
         self.set_header("Cache-Control", "public, max-age=31536000, immutable")
@@ -367,10 +381,12 @@ class AdminHandler(BaseHandler):
 
 class ApiHandler(BaseHandler):
     def prepare(self):
+        if self.request.method == "OPTIONS":
+            return
+
         self.authenticated_credentials = self.get_authenticated_credentials()
         if self.authenticated_credentials is None:
             self.set_status(401)
-            self.set_header("WWW-Authenticate", 'Basic realm="px-manager"')
             self.finish({"error": "authentication required"})
 
     def get(self):
@@ -384,10 +400,12 @@ class ApiHandler(BaseHandler):
 
 class ProxyListGenerateHandler(BaseHandler):
     def prepare(self):
+        if self.request.method == "OPTIONS":
+            return
+
         self.authenticated_credentials = self.get_authenticated_credentials()
         if self.authenticated_credentials is None:
             self.set_status(401)
-            self.set_header("WWW-Authenticate", 'Basic realm="px-manager"')
             self.finish({"error": "authentication required"})
 
     def get(self):
@@ -414,9 +432,46 @@ class ProxyListGenerateHandler(BaseHandler):
         self.set_header("Content-Type", "text/plain; charset=utf-8")
         self.set_header(
             "Content-Disposition",
-            'attachment; filename="proxy-list.txt"',
+            f'attachment; filename="{build_proxy_list_filename(username)}"',
         )
         self.write("\n".join(lines) + "\n")
+
+
+class FoxyProxyGenerateHandler(BaseHandler):
+    def prepare(self):
+        if self.request.method == "OPTIONS":
+            return
+
+        self.authenticated_credentials = self.get_authenticated_credentials()
+        if self.authenticated_credentials is None:
+            self.set_status(401)
+            self.finish({"error": "authentication required"})
+
+    def get(self):
+        username, password = self.authenticated_credentials  # type: ignore
+        proxy_type = self.get_query_argument("type", "https").lower()
+        default_port = self.get_query_argument("port", "443")
+
+        if proxy_type not in {"http", "https", "ssl", "socks", "socks4", "socks5"}:
+            self.set_status(400)
+            self.finish({"error": "unsupported proxy type"})
+            return
+
+        config = build_foxy_proxy_config(
+            self.hosts_data,
+            username=username,
+            password=password,
+            proxy_type=proxy_type,
+            default_port=default_port,
+        )
+
+        self.set_header("Content-Type", "application/json; charset=utf-8")
+        self.set_header(
+            "Content-Disposition",
+            f'attachment; filename="{build_foxy_proxy_filename(username)}"',
+        )
+        self.write(json.dumps(config, indent=2))
+        self.write("\n")
 
 
 def build_proxy_list_line(
@@ -443,6 +498,127 @@ def build_proxy_list_line(
     return (
         f"{proxy_type}://{quote(username, safe='')}:"
         f"{quote(password, safe='')}@{host}:{port}?{urlencode(params)}"
+    )
+
+
+def build_proxy_list_filename(username: str) -> str:
+    safe_username = re.sub(r"[^A-Za-z0-9_.-]+", "_", username).strip("._-")
+    if not safe_username:
+        safe_username = "user"
+    return f"{safe_username}-proxy-list.txt"
+
+
+def build_foxy_proxy_config(
+    hosts_data: list[dict],
+    *,
+    username: str,
+    password: str,
+    proxy_type: str,
+    default_port: str,
+) -> dict:
+    proxies = [
+        build_foxy_proxy_entry(
+            item,
+            username=username,
+            password=password,
+            proxy_type=proxy_type,
+            default_port=default_port,
+            color=pick_proxy_color(index),
+        )
+        for index, item in enumerate(hosts_data)
+    ]
+
+    return {
+        "mode": build_foxy_proxy_mode(proxies),
+        "sync": False,
+        "autoBackup": False,
+        "passthrough": "",
+        "theme": "",
+        "container": {},
+        "commands": {
+            "setProxy": "",
+            "setTabProxy": "",
+            "includeHost": "",
+            "excludeHost": "",
+        },
+        "data": proxies,
+    }
+
+
+def build_foxy_proxy_entry(
+    host_data: dict,
+    *,
+    username: str,
+    password: str,
+    proxy_type: str,
+    default_port: str,
+    color: str,
+) -> dict:
+    host = host_data["host"]
+    port = str(host_data.get("port", default_port))
+    title = host_data.get("title") or host_data.get("code") or host
+    code = str(host_data.get("code", "")).upper()
+
+    return {
+        "active": True,
+        "title": f"{title} Proxy",
+        "type": proxy_type,
+        "hostname": host,
+        "port": port,
+        "username": username,
+        "password": password,
+        "cc": code,
+        "city": "",
+        "color": color,
+        "pac": "",
+        "pacString": "",
+        "proxyDNS": True,
+        "include": [],
+        "exclude": [],
+        "tabProxy": [],
+    }
+
+
+def build_foxy_proxy_mode(proxies: list[dict]) -> str:
+    if not proxies:
+        return ""
+    first_proxy = proxies[0]
+    return f"{first_proxy['hostname']}:{first_proxy['port']}"
+
+
+def pick_proxy_color(index: int) -> str:
+    colors = [
+        "#5f3efb",
+        "#b9c6f6",
+        "#eef209",
+        "#3100f1",
+        "#8b0000",
+        "#198754",
+        "#fd7e14",
+        "#0dcaf0",
+    ]
+    return colors[index % len(colors)]
+
+
+def build_foxy_proxy_filename(username: str) -> str:
+    safe_username = re.sub(r"[^A-Za-z0-9_.-]+", "_", username).strip("._-")
+    if not safe_username:
+        safe_username = "user"
+    return f"{safe_username}-foxy-proxy.json"
+
+
+def build_csp_header() -> str:
+    return "; ".join(
+        [
+            "default-src 'self'",
+            "base-uri 'none'",
+            "frame-ancestors 'none'",
+            "form-action 'self'",
+            "img-src 'self'",
+            "object-src 'none'",
+            "script-src 'none'",
+            "style-src 'self'",
+        ]
     )
 
 
@@ -520,8 +696,14 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
             (r"/favicon.ico", FaviconHandler),
             (r"/api", ApiHandler),
             (r"/api/generate/proxy-list", ProxyListGenerateHandler),
+            (r"/api/generate/foxy-proxy", FoxyProxyGenerateHandler),
         ],
         cookie_secret=cookie_secret,
+        xsrf_cookies=True,
+        xsrf_cookie_kwargs={
+            "httponly": True,
+            "samesite": "Strict",
+        },
         static_path=str(resource_path("static")),
         template_path=str(resource_path("templates")),
         data_dir=data_dir,
@@ -530,6 +712,7 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
         hosts_data=hosts_data,
         session_store=session_store,
         ban_store=ban_store,
+        cors_allowed_origins=set(),
     )
 
 
@@ -547,6 +730,11 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=8888, show_default=True, type=int)
 @click.option(
+    "--cors-origin",
+    multiple=True,
+    help="Allowed CORS origin. Can be passed multiple times. Cookies are allowed only for these exact origins.",
+)
+@click.option(
     "--cookie-secret",
     envvar="PX_MANAGER_COOKIE_SECRET",
     help="Secret used to sign session cookies. Defaults to a random startup secret.",
@@ -555,12 +743,14 @@ def main(
     data_dir: pathlib.Path,
     host: str,
     port: int,
+    cors_origin: tuple[str, ...],
     cookie_secret: str | None,
 ):
     if not cookie_secret:
         cookie_secret = secrets.token_urlsafe(32)
 
     app = make_app(data_dir, cookie_secret)
+    app.settings["cors_allowed_origins"] = set(cors_origin)
     server = tornado.httpserver.HTTPServer(app)
     server.listen(port, address=host)
     session_cleanup = tornado.ioloop.PeriodicCallback(
