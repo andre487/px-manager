@@ -537,6 +537,38 @@ class FoxyProxyGenerateHandler(BaseHandler):
         self.write("\n")
 
 
+class ShadowrocketGenerateHandler(BaseHandler):
+    def prepare(self):
+        self.authenticated_credentials = self.require_authenticated_credentials()
+        if self.authenticated_credentials is None:
+            return
+
+    def get(self):
+        username, password = self.authenticated_credentials  # type: ignore
+        proxy_type = self.get_query_argument("type", "https").lower()
+        default_port = self.get_query_argument("port", "443")
+
+        if proxy_type not in {"http", "https", "socks5"}:
+            self.set_status(400)
+            self.finish({"error": "unsupported proxy type"})
+            return
+
+        config = build_shadowrocket_config(
+            self.hosts_data,
+            username=username,
+            password=password,
+            proxy_type=proxy_type,
+            default_port=default_port,
+        )
+
+        self.set_header("Content-Type", "text/plain; charset=utf-8")
+        self.set_header(
+            "Content-Disposition",
+            f'attachment; filename="{build_shadowrocket_filename(username)}"',
+        )
+        self.write(config)
+
+
 def build_proxy_list_line(
     host_data: dict,
     *,
@@ -670,6 +702,87 @@ def build_foxy_proxy_filename(username: str) -> str:
     return f"{safe_username}-foxy-proxy.json"
 
 
+def build_shadowrocket_config(
+    hosts_data: list[dict],
+    *,
+    username: str,
+    password: str,
+    proxy_type: str,
+    default_port: str,
+) -> str:
+    proxy_names = [
+        build_shadowrocket_proxy_name(item, index)
+        for index, item in enumerate(hosts_data, start=1)
+    ]
+    lines = [
+        "[General]",
+        "bypass-system = true",
+        "skip-proxy = 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12, localhost, *.local",
+        "",
+        "[Proxy]",
+    ]
+    lines.extend(
+        build_shadowrocket_proxy_line(
+            item,
+            name=name,
+            username=username,
+            password=password,
+            proxy_type=proxy_type,
+            default_port=default_port,
+        )
+        for item, name in zip(hosts_data, proxy_names)
+    )
+    lines.extend(
+        [
+            "",
+            "[Proxy Group]",
+            f"PROXY = select, {', '.join(proxy_names)}, DIRECT",
+            "",
+            "[Rule]",
+            "FINAL,PROXY",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def build_shadowrocket_proxy_line(
+    host_data: dict,
+    *,
+    name: str,
+    username: str,
+    password: str,
+    proxy_type: str,
+    default_port: str,
+) -> str:
+    host = host_data["host"]
+    port = str(host_data.get("port", default_port))
+    return (
+        f"{name} = {proxy_type}, {host}, {port}, "
+        f"username={escape_shadowrocket_value(username)}, "
+        f"password={escape_shadowrocket_value(password)}"
+    )
+
+
+def build_shadowrocket_proxy_name(host_data: dict, index: int) -> str:
+    title = str(host_data.get("title") or host_data.get("code") or host_data["host"])
+    safe_title = re.sub(r"[^A-Za-z0-9_.-]+", "_", title).strip("._-")
+    if not safe_title:
+        safe_title = f"Proxy {index}"
+    return f"{safe_title}_{index}"
+
+
+def escape_shadowrocket_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace(",", "\\,")
+
+
+def build_shadowrocket_filename(username: str) -> str:
+    safe_username = re.sub(r"[^A-Za-z0-9_.-]+", "_", username).strip("._-")
+    if not safe_username:
+        safe_username = "user"
+    return f"{safe_username}-shadowrocket.conf"
+
+
 def build_csp_header() -> str:
     return "; ".join(
         [
@@ -779,6 +892,7 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
             (r"/api", ApiHandler),
             (r"/api/generate/proxy-list", ProxyListGenerateHandler),
             (r"/api/generate/foxy-proxy", FoxyProxyGenerateHandler),
+            (r"/api/generate/shadowrocket", ShadowrocketGenerateHandler),
         ],
         cookie_secret=cookie_secret,
         xsrf_cookies=True,

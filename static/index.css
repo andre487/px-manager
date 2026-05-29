@@ -145,9 +145,13 @@ button:hover,
 }
 
 .actions {
-  display: flex;
+  display: grid;
   gap: 10px;
-  flex-wrap: wrap;
+  align-items: start;
+}
+
+.actions .button {
+  width: fit-content;
 }
 
 .download-group {
@@ -215,12 +219,67 @@ button:hover,
   }
 
   main {
-    padding: 20px 0;
+    width: min(100% - 24px, 945px);
+    padding: 24px 0;
   }
 
   .home-layout,
   .home-layout.has-content {
     grid-template-columns: 1fr;
+    gap: 24px;
+  }
+
+  .auth {
+    padding: 24px;
+  }
+
+  h1 {
+    margin-bottom: 24px;
+  }
+
+  form {
+    gap: 18px;
+  }
+
+  input {
+    padding: 13px 14px;
+  }
+
+  button,
+  .button {
+    padding: 13px 16px;
+  }
+
+  .actions {
+    gap: 12px;
+  }
+
+  .actions .button {
+    box-sizing: border-box;
+    width: 100%;
+    text-align: center;
+  }
+
+  .download-group,
+  .tg-proxies {
+    margin-top: 28px;
+  }
+
+  .page-links {
+    gap: 18px;
+    margin-top: 20px;
+  }
+
+  .tg-links {
+    gap: 10px;
+  }
+
+  .tg-links a {
+    padding: 13px 14px;
+  }
+
+  .message {
+    padding: 20px;
   }
 }
 
