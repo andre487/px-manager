@@ -13,14 +13,24 @@ body {
 }
 
 main {
-  width: min(100% - 32px, 800px);
+  width: min(100% - 32px, 920px);
+}
+
+.home-layout {
   display: grid;
-  justify-items: center;
-  gap: 22px;
+  grid-template-columns: minmax(320px, 460px);
+  justify-content: center;
+  align-items: start;
+  gap: 28px;
+}
+
+.home-layout.has-content {
+  grid-template-columns: minmax(360px, 460px) minmax(0, 1fr);
+  justify-content: stretch;
 }
 
 .auth {
-  width: min(100%, 360px);
+  width: 100%;
 }
 
 form {
@@ -75,7 +85,6 @@ button,
 .message {
   box-sizing: border-box;
   width: 100%;
-  max-width: 800px;
   margin: 0;
   padding: 14px 16px;
   border-radius: 8px;
@@ -111,7 +120,7 @@ button,
 .tg-proxies {
   box-sizing: border-box;
   width: 100%;
-  max-width: 800px;
+  margin-top: 22px;
 }
 
 .tg-proxies h2 {
@@ -131,4 +140,24 @@ button,
   color: #1769aa;
   background: color-mix(in srgb, #1769aa 8%, Canvas);
   overflow-wrap: anywhere;
+}
+
+.content {
+  display: grid;
+  gap: 18px;
+}
+
+@media (max-width: 760px) {
+  body {
+    place-items: start center;
+  }
+
+  main {
+    padding: 28px 0;
+  }
+
+  .home-layout,
+  .home-layout.has-content {
+    grid-template-columns: 1fr;
+  }
 }

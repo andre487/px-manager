@@ -9,49 +9,55 @@
 </head>
 <body>
   <main>
-    <section class="auth">
-    {% if current_user %}
-      <h1>px-manager</h1>
-      <div class="session">
-        <span>Signed in as <strong>{{ escape(current_user) }}</strong></span>
-        <form class="logout" method="post" action="/logout">
-          {% module xsrf_form_html() %}
-          <button type="submit">Logout</button>
-        </form>
-      </div>
-      <div class="actions">
-        <a class="button" href="/api/generate/proxy-list" download="{{ escape(current_user) }}-proxy-list.txt">Download proxy list</a>
-        <a class="button" href="/api/generate/foxy-proxy" download="{{ escape(current_user) }}-foxy-proxy.json">Download FoxyProxy</a>
-        {% if is_admin %}<a class="button" href="/admin">Admin</a>{% end %}
-      </div>
-    {% else %}
-      <h1>px-manager</h1>
-      {% if error %}<p class="error">{{ escape(error) }}</p>{% end %}
-      <form method="post" action="/">
-        {% module xsrf_form_html() %}
-        <label>
-          Login
-          <input name="username" autocomplete="username" autofocus required>
-        </label>
-        <label>
-          Password
-          <input name="password" type="password" autocomplete="current-password" required>
-        </label>
-        <button type="submit">Login</button>
-      </form>
-    {% end %}
-    </section>
-    {% if current_user and tg_proxies %}
-      <section class="tg-proxies">
-        <h2>Telegram proxies</h2>
-        <div class="tg-links">
-          {% for tg_proxy in tg_proxies %}
-            <a href="{{ tg_proxy }}">{{ tg_proxy }}</a>
-          {% end %}
+    <div class="home-layout{% if current_user and message %} has-content{% end %}">
+      <section class="auth">
+      {% if current_user %}
+        <h1>px-manager</h1>
+        <div class="session">
+          <span>Signed in as <strong>{{ escape(current_user) }}</strong></span>
+          <form class="logout" method="post" action="/logout">
+            {% module xsrf_form_html() %}
+            <button type="submit">Logout</button>
+          </form>
         </div>
+        <div class="actions">
+          <a class="button" href="/api/generate/proxy-list" download="{{ escape(current_user) }}-proxy-list.txt">Download proxy list</a>
+          <a class="button" href="/api/generate/foxy-proxy" download="{{ escape(current_user) }}-foxy-proxy.json">Download FoxyProxy</a>
+          {% if is_admin %}<a class="button" href="/admin">Admin</a>{% end %}
+        </div>
+        {% if tg_proxies %}
+          <section class="tg-proxies">
+            <h2>Telegram proxies</h2>
+            <div class="tg-links">
+              {% for tg_proxy in tg_proxies %}
+                <a href="{{ tg_proxy }}">{{ tg_proxy }}</a>
+              {% end %}
+            </div>
+          </section>
+        {% end %}
+      {% else %}
+        <h1>px-manager</h1>
+        {% if error %}<p class="error">{{ escape(error) }}</p>{% end %}
+        <form method="post" action="/">
+          {% module xsrf_form_html() %}
+          <label>
+            Login
+            <input name="username" autocomplete="username" autofocus required>
+          </label>
+          <label>
+            Password
+            <input name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <button type="submit">Login</button>
+        </form>
+      {% end %}
       </section>
-    {% end %}
-    {% if current_user and message %}<div class="message">{% raw message_html %}</div>{% end %}
+      {% if current_user and message %}
+        <section class="content">
+          <div class="message">{% raw message_html %}</div>
+        </section>
+      {% end %}
+    </div>
   </main>
 </body>
 </html>
