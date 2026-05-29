@@ -220,6 +220,7 @@ class BanStore:
 class BaseHandler(tornado.web.RequestHandler):
     def set_default_headers(self):
         self.set_header("X-Content-Type-Options", "nosniff")
+        self.set_header("X-Frame-Options", "DENY")
         self.set_header("Referrer-Policy", "same-origin")
         self.set_header("Content-Security-Policy", build_csp_header())
         self.set_cors_headers()
@@ -254,10 +255,6 @@ class BaseHandler(tornado.web.RequestHandler):
 
     @property
     def client_ip(self) -> str:
-        forwarded_for = self.request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            return forwarded_for.split(",", 1)[0].strip()
-
         real_ip = self.request.headers.get("X-Real-IP")
         if real_ip:
             return real_ip.strip()
@@ -314,8 +311,8 @@ class BaseHandler(tornado.web.RequestHandler):
             return credentials
 
         self.ban_store.record_auth_failure(self.client_ip)
-        self.set_status(401)
-        self.finish({"error": "authentication required"})
+        self.set_status(403)
+        self.finish({"error": "forbidden"})
         return None
 
 
@@ -440,9 +437,6 @@ class AdminHandler(BaseHandler):
 
 class ApiHandler(BaseHandler):
     def prepare(self):
-        if self.request.method == "OPTIONS":
-            return
-
         self.authenticated_credentials = self.require_authenticated_credentials()
         if self.authenticated_credentials is None:
             return
@@ -458,9 +452,6 @@ class ApiHandler(BaseHandler):
 
 class ProxyListGenerateHandler(BaseHandler):
     def prepare(self):
-        if self.request.method == "OPTIONS":
-            return
-
         self.authenticated_credentials = self.require_authenticated_credentials()
         if self.authenticated_credentials is None:
             return
@@ -496,9 +487,6 @@ class ProxyListGenerateHandler(BaseHandler):
 
 class FoxyProxyGenerateHandler(BaseHandler):
     def prepare(self):
-        if self.request.method == "OPTIONS":
-            return
-
         self.authenticated_credentials = self.require_authenticated_credentials()
         if self.authenticated_credentials is None:
             return
