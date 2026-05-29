@@ -402,6 +402,15 @@ class FaviconHandler(tornado.web.RequestHandler):
         self.write(resource_path("static", "favicon.ico").read_bytes())
 
 
+class RobotsHandler(tornado.web.RequestHandler):
+    def set_default_headers(self):
+        self.set_header("X-Content-Type-Options", "nosniff")
+
+    def get(self):
+        self.set_header("Content-Type", "text/plain; charset=utf-8")
+        self.write("User-agent: *\nDisallow: /\n")
+
+
 class AdminHandler(BaseHandler):
     def prepare(self):
         if self.current_user is None:
@@ -755,6 +764,7 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
             (r"/admin", AdminHandler),
             (r"/logout", LogoutHandler),
             (r"/favicon.ico", FaviconHandler),
+            (r"/robots.txt", RobotsHandler),
             (r"/api", ApiHandler),
             (r"/api/generate/proxy-list", ProxyListGenerateHandler),
             (r"/api/generate/foxy-proxy", FoxyProxyGenerateHandler),
