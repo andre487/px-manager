@@ -398,7 +398,7 @@ class FaviconHandler(tornado.web.RequestHandler):
 
     def get(self):
         self.set_header("Content-Type", "image/x-icon")
-        self.set_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.set_header("Cache-Control", "public, max-age=3600, must-revalidate")
         self.write(resource_path("static", "favicon.ico").read_bytes())
 
 
