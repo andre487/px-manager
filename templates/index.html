@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="/favicon.ico" sizes="any">
   <link rel="stylesheet" href="{{ static_url("index.css") }}">
-  <title>px-manager</title>
+  <title>PX Manager 487</title>
 </head>
 <body>
   <main>
     <div class="home-layout{% if current_user and message %} has-content{% end %}">
       <section class="auth">
       {% if current_user %}
-        <h1>px-manager</h1>
+        <h1>PX Manager 487</h1>
         <div class="session">
           <span>Signed in as <strong>{{ escape(current_user) }}</strong></span>
           <form class="logout" method="post" action="/logout">
@@ -20,11 +20,14 @@
             <button type="submit">Logout</button>
           </form>
         </div>
-        <div class="actions">
-          <a class="button" href="/api/generate/proxy-list" download="{{ escape(current_user) }}-proxy-list.txt">Download proxy list</a>
-          <a class="button" href="/api/generate/foxy-proxy" download="{{ escape(current_user) }}-foxy-proxy.json">Download FoxyProxy</a>
-          {% if is_admin %}<a class="button" href="/admin">Admin</a>{% end %}
+        <div class="download-group">
+          <h2>Download</h2>
+          <div class="actions">
+            <a class="button" href="/api/generate/proxy-list" download="{{ escape(current_user) }}-proxy-list.txt">ProxyList.txt</a>
+            <a class="button" href="/api/generate/foxy-proxy" download="{{ escape(current_user) }}-foxy-proxy.json">FoxyProxy.json</a>
+          </div>
         </div>
+        {% if is_admin %}<a class="button admin-link" href="/admin">Admin</a>{% end %}
         {% if tg_proxies %}
           <section class="tg-proxies">
             <h2>Telegram proxies</h2>

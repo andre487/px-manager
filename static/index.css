@@ -111,10 +111,13 @@ button,
 }
 
 .actions {
-  margin-top: 20px;
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.download-group {
+  margin-top: 22px;
 }
 
 .tg-proxies {
@@ -123,9 +126,14 @@ button,
   margin-top: 22px;
 }
 
+.download-group h2,
 .tg-proxies h2 {
   margin: 0 0 10px;
   font-size: 20px;
+}
+
+.admin-link {
+  margin-top: 14px;
 }
 
 .tg-links {
