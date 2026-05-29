@@ -16,6 +16,10 @@ from logging.handlers import RotatingFileHandler
 from urllib.parse import quote, urlencode, urlparse
 
 import click
+import dns.asyncresolver
+import dns.exception
+import dns.resolver
+import dns.rdatatype
 import icmplib
 import tornado.escape
 import tornado.log
@@ -657,6 +661,50 @@ class HealthConnectHandler(BaseHandler):
         return host_data
 
 
+class HealthDnsHandler(BaseHandler):
+    def prepare(self):
+        self.authenticated_credentials = self.require_authenticated_credentials()
+        if self.authenticated_credentials is None:
+            return
+
+    async def get(self):
+        host_data = self.get_allowed_health_host()
+        if host_data is None:
+            return
+
+        host = host_data["host"]
+        cached_result = get_cached_health_result("dns", host)
+        if cached_result is not None:
+            self.write(cached_result)
+            return
+
+        result: dict[str, object] = {
+            "ok": False,
+            "host": host,
+            "status": "error",
+            "addresses": [],
+            "error": None,
+        }
+
+        try:
+            dns_result = await resolve_host_addresses(host)
+            result.update(dns_result)
+        except Exception as error:
+            result["error"] = str(error) or error.__class__.__name__
+
+        set_cached_health_result("dns", host, result)
+        self.write(result)
+
+    def get_allowed_health_host(self) -> dict | None:
+        host = self.get_query_argument("host", "")
+        host_data = find_host_data(self.hosts_data, host)
+        if host_data is None:
+            self.set_status(400)
+            self.finish({"error": "host is not allowed"})
+            return None
+        return host_data
+
+
 class HealthHeadHandler(BaseHandler):
     def prepare(self):
         self.authenticated_credentials = self.require_authenticated_credentials()
@@ -1025,6 +1073,82 @@ async def run_ping(host: str) -> dict[str, object]:
         result["error"] = "100% packet loss"
 
     return result
+
+
+async def resolve_host_addresses(host: str) -> dict[str, object]:
+    system_task = asyncio.create_task(resolve_host_with_system_dns(host))
+    google_task = asyncio.create_task(resolve_host_with_google_dns(host))
+    system_result, google_result = await asyncio.gather(system_task, google_task)
+    ok = bool(system_result["ok"] and google_result["ok"])
+    errors = [
+        f"{name}: {result['error']}"
+        for name, result in (("system", system_result), ("8.8.8.8", google_result))
+        if result["error"]
+    ]
+    return {
+        "ok": ok,
+        "status": "resolved" if ok else "error",
+        "system": system_result,
+        "google": google_result,
+        "error": "; ".join(errors) if errors else None,
+    }
+
+
+async def resolve_host_with_system_dns(host: str) -> dict[str, object]:
+    try:
+        loop = asyncio.get_running_loop()
+        addrinfo = await asyncio.wait_for(
+            loop.getaddrinfo(host, None, type=socket.SOCK_STREAM),
+            timeout=5,
+        )
+    except Exception as error:
+        return build_dns_result(False, [], str(error) or error.__class__.__name__)
+
+    addresses = sorted({item[4][0] for item in addrinfo})
+    return build_dns_result(bool(addresses), addresses, None if addresses else "no records")
+
+
+async def resolve_host_with_google_dns(host: str) -> dict[str, object]:
+    resolver = dns.asyncresolver.Resolver(configure=False)
+    resolver.nameservers = ["8.8.8.8"]
+    resolver.lifetime = 5
+    resolver.timeout = 2
+    tasks = [
+        asyncio.create_task(resolve_dns_record(resolver, host, dns.rdatatype.A)),
+        asyncio.create_task(resolve_dns_record(resolver, host, dns.rdatatype.AAAA)),
+    ]
+    results = await asyncio.gather(*tasks)
+    addresses = sorted({address for result in results for address in result[0]})
+    errors = [result[1] for result in results if result[1]]
+    if addresses:
+        return build_dns_result(True, addresses, None)
+
+    return build_dns_result(False, [], "; ".join(errors) or "no records")
+
+
+async def resolve_dns_record(
+    resolver: dns.asyncresolver.Resolver,
+    host: str,
+    record_type: dns.rdatatype.RdataType,
+) -> tuple[list[str], str | None]:
+    try:
+        answer = await resolver.resolve(host, record_type)
+    except dns.resolver.NoAnswer:
+        return [], None
+    except dns.resolver.NXDOMAIN as error:
+        return [], str(error) or "NXDOMAIN"
+    except dns.exception.DNSException as error:
+        return [], str(error) or error.__class__.__name__
+
+    return [item.to_text() for item in answer], None
+
+
+def build_dns_result(ok: bool, addresses: list[str], error: str | None) -> dict[str, object]:
+    return {
+        "ok": ok,
+        "addresses": addresses,
+        "error": error,
+    }
 
 
 def build_proxy_list_line(
@@ -1533,6 +1657,7 @@ def make_app(
             (r"/robots.txt", RobotsHandler),
             (r"/api", ApiHandler),
             (r"/api/health/connect", HealthConnectHandler),
+            (r"/api/health/dns", HealthDnsHandler),
             (r"/api/health/head", HealthHeadHandler),
             (r"/api/health/ping", HealthPingHandler),
             (r"/api/generate/proxy-list", ProxyListGenerateHandler),

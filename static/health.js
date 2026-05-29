@@ -66,6 +66,10 @@
   }
 
   function formatSuccessfulStatus(kind, data) {
+    if (kind === "dns") {
+      return formatDnsStatus(data);
+    }
+
     if (kind === "ping") {
       var rtt = data.rtt_avg_ms === null || data.rtt_avg_ms === undefined
         ? "n/a"
@@ -78,6 +82,23 @@
 
     var suffix = data.status_code ? " (" + data.status_code + ")" : "";
     return "OK" + suffix;
+  }
+
+  function formatDnsStatus(data) {
+    var system = data.system || {};
+    var google = data.google || {};
+
+    return "System: " + formatDnsResolverResult(system) +
+      "\nGoogle:  " + formatDnsResolverResult(google);
+  }
+
+  function formatDnsResolverResult(result) {
+    var addresses = result.addresses || [];
+    if (!addresses.length) {
+      return result.error || "n/a";
+    }
+
+    return addresses.slice(0, 3).join(", ");
   }
 
   function check(row, kind, path) {
@@ -95,7 +116,7 @@
       }
 
       var error = data.error || "Проверка не прошла";
-      setStatus(status, "status-error", error);
+      setStatus(status, "status-error", kind === "dns" ? formatDnsStatus(data) : error);
     }).catch(function (error) {
       var message = error && error.message ? error.message : "Ошибка запроса";
       setStatus(status, "status-error", message);
@@ -112,6 +133,7 @@
     var rows = document.querySelectorAll(".health-row");
     rows.forEach(function (row) {
       check(row, "connect", "/api/health/connect");
+      check(row, "dns", "/api/health/dns");
       check(row, "head", "/api/health/head");
       check(row, "ping", "/api/health/ping");
     });

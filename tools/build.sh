@@ -1,3 +1,3 @@
 #!/bin/sh
 cd "`dirname "$0"`/.."
-exec uv run pyinstaller --clean px-manager.spec
+exec uv run pyinstaller px-manager.spec
