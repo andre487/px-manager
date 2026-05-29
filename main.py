@@ -656,7 +656,7 @@ def build_foxy_proxy_entry(
 
     return {
         "active": True,
-        "title": f"{title} Proxy",
+        "title": title,
         "type": proxy_type,
         "hostname": host,
         "port": port,
