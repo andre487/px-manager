@@ -18,6 +18,8 @@ SESSION_TTL_SECONDS = 30 * 60
 SESSION_CLEANUP_INTERVAL_MS = 60 * 1000
 SESSION_COOKIE_NAME = "session"
 
+cur_dir = pathlib.Path.cwd()
+
 
 def resource_path(*parts: str) -> pathlib.Path:
     base_path = pathlib.Path(getattr(sys, "_MEIPASS", pathlib.Path(__file__).parent))
@@ -208,12 +210,14 @@ class ApiHandler(BaseHandler):
         self.write(
             {
                 "ok": True,
-                "user": self.authenticated_credentials[0],
+                "user": self.authenticated_credentials[0],  # type: ignore
             }
         )
 
 
-def make_app(passwd_file: pathlib.Path, cookie_secret: str) -> tornado.web.Application:
+def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Application:
+    hosts_data = json.loads((data_dir / "hosts.json").read_text())
+
     session_store = SessionStore(SESSION_TTL_SECONDS)
     return tornado.web.Application(
         [
@@ -225,18 +229,22 @@ def make_app(passwd_file: pathlib.Path, cookie_secret: str) -> tornado.web.Appli
         cookie_secret=cookie_secret,
         static_path=str(resource_path("static")),
         template_path=str(resource_path("templates")),
-        password_store=PasswordStore.from_file(passwd_file),
+        password_store=PasswordStore.from_file(data_dir / "passwd.json"),
+        hosts_data=hosts_data,
         session_store=session_store,
     )
 
 
 @click.command()
 @click.option(
-    "--passwd-file",
+    "--data-dir",
     type=click.Path(
-        exists=True, dir_okay=False, file_okay=True, path_type=pathlib.Path
+        exists=True,
+        dir_okay=True,
+        file_okay=False,
+        path_type=pathlib.Path,
     ),
-    required=True,
+    default=cur_dir / "data",
 )
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=8888, show_default=True, type=int)
@@ -246,7 +254,7 @@ def make_app(passwd_file: pathlib.Path, cookie_secret: str) -> tornado.web.Appli
     help="Secret used to sign session cookies. Defaults to a random startup secret.",
 )
 def main(
-    passwd_file: pathlib.Path,
+    data_dir: pathlib.Path,
     host: str,
     port: int,
     cookie_secret: str | None,
@@ -254,7 +262,7 @@ def main(
     if not cookie_secret:
         cookie_secret = secrets.token_urlsafe(32)
 
-    app = make_app(passwd_file, cookie_secret)
+    app = make_app(data_dir, cookie_secret)
     server = tornado.httpserver.HTTPServer(app)
     server.listen(port, address=host)
     session_cleanup = tornado.ioloop.PeriodicCallback(
