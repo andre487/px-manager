@@ -12,7 +12,7 @@
     px_manager_data_dir: "{{ px_manager_home }}/data"
     px_manager_state_dir: /var/lib/px-manager
     px_manager_log_dir: /var/log/px-manager
-    px_manager_build_dir: /tmp/px-manager-build
+    px_manager_build_dir: /opt/px-manager/src
     px_manager_service_name: px-manager
     px_manager_service_port: 8888
     px_manager_cors_origins: []
@@ -130,6 +130,7 @@
         group: root
         mode: "0644"
       loop: "{{ px_manager_source_files }}"
+      register: px_manager_source_files_copy
 
     - name: Copy source directories for Linux build
       ansible.builtin.copy:
@@ -139,6 +140,7 @@
         group: root
         mode: preserve
       loop: "{{ px_manager_source_dirs }}"
+      register: px_manager_source_dirs_copy
 
     - name: Copy deploy scripts
       ansible.builtin.copy:
@@ -147,6 +149,12 @@
         owner: root
         group: root
         mode: "0755"
+      register: px_manager_deploy_scripts_copy
+
+    - name: Check built px-manager binary
+      ansible.builtin.stat:
+        path: "{{ px_manager_build_dir }}/dist/px-manager"
+      register: px_manager_built_binary_stat
 
     - name: Build px-manager binary
       ansible.builtin.command:
@@ -154,6 +162,11 @@
         chdir: "{{ px_manager_build_dir }}"
       register: px_manager_build
       changed_when: true
+      when: >
+        px_manager_source_files_copy.changed
+        or px_manager_source_dirs_copy.changed
+        or px_manager_deploy_scripts_copy.changed
+        or not px_manager_built_binary_stat.stat.exists
 
     - name: Install px-manager binary
       ansible.builtin.copy:
@@ -267,11 +280,6 @@
         enabled: true
         state: started
         daemon_reload: true
-
-    - name: Remove build sources from host
-      ansible.builtin.file:
-        path: "{{ px_manager_build_dir }}"
-        state: absent
 
   handlers:
     - name: Reload systemd
