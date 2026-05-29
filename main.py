@@ -16,6 +16,7 @@ from logging.handlers import RotatingFileHandler
 from urllib.parse import quote, urlencode, urlparse
 
 import click
+import icmplib
 import tornado.escape
 import tornado.log
 import tornado.httpserver
@@ -43,11 +44,6 @@ BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 AUTH_LOG = logging.getLogger("px_manager.auth")
 BAN_LOG = logging.getLogger("px_manager.ban")
-PING_PACKET_LOSS_RE = re.compile(r"(\d+(?:\.\d+)?)%\s+packet loss")
-PING_RTT_RE = re.compile(
-    r"(?:rtt|round-trip)[^=]*=\s*"
-    r"(?P<min>\d+(?:\.\d+)?)/(?P<avg>\d+(?:\.\d+)?)/(?P<max>\d+(?:\.\d+)?)"
-)
 
 cur_dir = pathlib.Path.cwd()
 
@@ -967,76 +963,40 @@ def set_cached_health_result(
 
 
 async def run_ping(host: str) -> dict[str, object]:
-    command = build_ping_command(host)
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=12)
-    except asyncio.TimeoutError:
-        process.kill()
-        await process.communicate()
-        raise TimeoutError("ping timed out")
+        response = await asyncio.wait_for(
+            icmplib.async_ping(
+                host,
+                count=4,
+                interval=0.2,
+                timeout=2,
+                privileged=True,
+            ),
+            timeout=10,
+        )
+    except icmplib.SocketPermissionError as error:
+        return {
+            "ok": False,
+            "status": "error",
+            "packet_loss_percent": None,
+            "rtt_avg_ms": None,
+            "error": f"ICMP permission denied: {error}",
+        }
 
-    output = "\n".join(
-        part.decode("utf-8", "replace")
-        for part in (stdout, stderr)
-        if part
-    )
-    packet_loss = parse_ping_packet_loss(output)
-    rtt_avg = parse_ping_rtt_avg(output)
-    result: dict[str, object] = {
-        "ok": process.returncode == 0 and packet_loss is not None and packet_loss < 100,
+    packet_loss = response.packet_loss * 100
+    result = {
+        "ok": response.is_alive,
         "status": "responded",
         "packet_loss_percent": packet_loss,
-        "rtt_avg_ms": rtt_avg,
+        "rtt_avg_ms": response.avg_rtt if response.is_alive else None,
         "error": None,
     }
 
-    if packet_loss is None:
-        result["ok"] = False
-        result["status"] = "error"
-        result["error"] = "failed to parse ping output"
-    elif packet_loss >= 100:
+    if packet_loss >= 100:
         result["status"] = "error"
         result["error"] = "100% packet loss"
-    elif process.returncode != 0:
-        result["error"] = (
-            extract_ping_error(output) or f"ping exited with {process.returncode}"
-        )
 
     return result
-
-
-def build_ping_command(host: str) -> list[str]:
-    if sys.platform == "darwin":
-        return ["ping", "-n", "-c", "4", "-W", "2000", host]
-
-    return ["ping", "-n", "-c", "4", "-W", "2", host]
-
-
-def parse_ping_packet_loss(output: str) -> float | None:
-    match = PING_PACKET_LOSS_RE.search(output)
-    if match is None:
-        return None
-    return float(match.group(1))
-
-
-def parse_ping_rtt_avg(output: str) -> float | None:
-    match = PING_RTT_RE.search(output)
-    if match is None:
-        return None
-    return float(match.group("avg"))
-
-
-def extract_ping_error(output: str) -> str | None:
-    for line in output.splitlines():
-        line = line.strip()
-        if line and not line.startswith(("PING ", "---", "round-trip", "rtt ")):
-            return line
-    return None
 
 
 def build_proxy_list_line(
