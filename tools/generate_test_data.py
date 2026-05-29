@@ -1,5 +1,6 @@
 import json
 import os
+import pathlib
 
 from argon2 import PasswordHasher
 
@@ -9,8 +10,13 @@ TEST_USERS = {
     "admin": "admin",
 }
 
+data_dir = pathlib.Path(os.path.join(os.path.dirname(__file__), "..", "data")).absolute()
+
 
 def main():
+    with open(data_dir / "admin.txt", "w") as f:
+        f.write("admin")
+
     generate_passwd()
     generate_hosts()
 
@@ -22,7 +28,7 @@ def generate_passwd():
     for name, password in TEST_USERS.items():
         passwd_data[name] = ph.hash(password)
 
-    passwd_file = os.path.join(os.path.dirname(__file__), "..", "data", "passwd.json")
+    passwd_file = os.path.join(data_dir, "passwd.json")
     with open(passwd_file, "w") as f:
         json.dump(passwd_data, f, indent=2)
 
@@ -45,7 +51,7 @@ def generate_hosts():
             "title": "RU",
         },
     ]
-    hosts_file = os.path.join(os.path.dirname(__file__), "..", "data", "hosts.json")
+    hosts_file = os.path.join(data_dir, "hosts.json")
     with open(hosts_file, "w") as f:
         json.dump(hosts_data, f, indent=2)
 

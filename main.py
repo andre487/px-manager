@@ -123,6 +123,18 @@ class BaseHandler(tornado.web.RequestHandler):
     def hosts_data(self) -> list[dict]:
         return self.application.settings["hosts_data"]
 
+    @property
+    def data_dir(self) -> pathlib.Path:
+        return self.application.settings["data_dir"]
+
+    @property
+    def admin_user(self) -> str | None:
+        return self.application.settings["admin_user"]
+
+    @property
+    def is_admin(self) -> bool:
+        return self.current_user is not None and self.current_user == self.admin_user
+
     def get_current_user(self):
         session = self.get_session()
         if session is None:
@@ -164,7 +176,12 @@ class BaseHandler(tornado.web.RequestHandler):
 
 class IndexHandler(BaseHandler):
     def get(self):
-        self.render("index.html", error=None)
+        self.render(
+            "index.html",
+            error=None,
+            message=read_message(self.data_dir),
+            is_admin=self.is_admin,
+        )
 
     def post(self):
         username = self.get_body_argument("username", "")
@@ -172,7 +189,12 @@ class IndexHandler(BaseHandler):
 
         if not self.password_store.verify(username, password):
             self.set_status(401)
-            self.render("index.html", error="Invalid login or password")
+            self.render(
+                "index.html",
+                error="Invalid login or password",
+                message=read_message(self.data_dir),
+                is_admin=False,
+            )
             return
 
         session_id = self.session_store.create(username, password)
@@ -201,6 +223,24 @@ class FaviconHandler(tornado.web.RequestHandler):
         self.set_header("Content-Type", "image/x-icon")
         self.set_header("Cache-Control", "public, max-age=31536000, immutable")
         self.write(resource_path("static", "favicon.ico").read_bytes())
+
+
+class AdminHandler(BaseHandler):
+    def prepare(self):
+        if self.current_user is None:
+            self.redirect("/")
+            raise tornado.web.Finish()
+
+        if not self.is_admin:
+            self.set_status(403)
+            self.finish("Forbidden")
+
+    def get(self):
+        self.render("admin.html", message=read_message(self.data_dir), saved=False)
+
+    def post(self):
+        write_message(self.data_dir, self.get_body_argument("message", ""))
+        self.render("admin.html", message=read_message(self.data_dir), saved=True)
 
 
 class ApiHandler(BaseHandler):
@@ -284,13 +324,29 @@ def build_proxy_list_line(
     )
 
 
+def read_optional_text(path: pathlib.Path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text().strip()
+
+
+def read_message(data_dir: pathlib.Path) -> str:
+    return read_optional_text(data_dir / "message.txt")
+
+
+def write_message(data_dir: pathlib.Path, message: str) -> None:
+    (data_dir / "message.txt").write_text(message.strip())
+
+
 def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Application:
     hosts_data = json.loads((data_dir / "hosts.json").read_text())
+    admin_user = read_optional_text(data_dir / "admin.txt") or None
 
     session_store = SessionStore(SESSION_TTL_SECONDS)
     return tornado.web.Application(
         [
             (r"/", IndexHandler),
+            (r"/admin", AdminHandler),
             (r"/logout", LogoutHandler),
             (r"/favicon.ico", FaviconHandler),
             (r"/api", ApiHandler),
@@ -299,6 +355,8 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
         cookie_secret=cookie_secret,
         static_path=str(resource_path("static")),
         template_path=str(resource_path("templates")),
+        data_dir=data_dir,
+        admin_user=admin_user,
         password_store=PasswordStore.from_file(data_dir / "passwd.json"),
         hosts_data=hosts_data,
         session_store=session_store,
