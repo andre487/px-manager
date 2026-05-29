@@ -52,7 +52,7 @@
       </form>
     {% end %}
     </section>
-    {% if current_user and message %}<div class="message">{{ escape(message) }}</div>{% end %}
+    {% if current_user and message %}<div class="message">{% raw message_html %}</div>{% end %}
   </main>
 </body>
 </html>

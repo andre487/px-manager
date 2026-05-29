@@ -1,11 +1,13 @@
 import base64
+import html
 import json
 import pathlib
+import re
 import secrets
 import sys
 import time
 from dataclasses import dataclass
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 import click
 import tornado.escape
@@ -18,6 +20,10 @@ from argon2.exceptions import Argon2Error, VerificationError
 SESSION_TTL_SECONDS = 30 * 60
 SESSION_CLEANUP_INTERVAL_MS = 60 * 1000
 SESSION_COOKIE_NAME = "session"
+MESSAGE_HTML_CACHE: dict[str, str] = {}
+LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
+BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 
 cur_dir = pathlib.Path.cwd()
 
@@ -176,10 +182,12 @@ class BaseHandler(tornado.web.RequestHandler):
 
 class IndexHandler(BaseHandler):
     def get(self):
+        message = read_message(self.data_dir)
         self.render(
             "index.html",
             error=None,
-            message=read_message(self.data_dir),
+            message=message,
+            message_html=compile_message_html(message),
             is_admin=self.is_admin,
         )
 
@@ -192,7 +200,8 @@ class IndexHandler(BaseHandler):
             self.render(
                 "index.html",
                 error="Invalid login or password",
-                message=read_message(self.data_dir),
+                message="",
+                message_html="",
                 is_admin=False,
             )
             return
@@ -331,11 +340,53 @@ def read_optional_text(path: pathlib.Path) -> str:
 
 
 def read_message(data_dir: pathlib.Path) -> str:
-    return read_optional_text(data_dir / "message.txt")
+    return read_optional_text(data_dir / "message.md")
+
+
+def compile_message_html(message: str) -> str:
+    cached_html = MESSAGE_HTML_CACHE.get(message)
+    if cached_html is not None:
+        return cached_html
+
+    compiled = render_message_markdown(message)
+    MESSAGE_HTML_CACHE.clear()
+    MESSAGE_HTML_CACHE[message] = compiled
+    return compiled
+
+
+def render_message_markdown(message: str) -> str:
+    parts = []
+    last_pos = 0
+
+    for match in LINK_RE.finditer(message):
+        parts.append(render_inline_markdown(message[last_pos : match.start()]))
+        parts.append(render_link(match.group(1), match.group(2), match.group(0)))
+        last_pos = match.end()
+
+    parts.append(render_inline_markdown(message[last_pos:]))
+    return "".join(parts)
+
+
+def render_link(text: str, url: str, fallback: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https", "mailto"}:
+        return render_inline_markdown(fallback)
+
+    return (
+        f'<a href="{html.escape(url, quote=True)}" '
+        f'target="_blank" rel="noopener noreferrer">'
+        f"{render_inline_markdown(text)}</a>"
+    )
+
+
+def render_inline_markdown(text: str) -> str:
+    escaped_text = html.escape(text)
+    escaped_text = BOLD_RE.sub(r"<strong>\1</strong>", escaped_text)
+    return ITALIC_RE.sub(r"<em>\1</em>", escaped_text)
 
 
 def write_message(data_dir: pathlib.Path, message: str) -> None:
-    (data_dir / "message.txt").write_text(message.strip())
+    (data_dir / "message.md").write_text(message.strip())
 
 
 def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Application:
