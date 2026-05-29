@@ -1,0 +1,260 @@
+---
+- name: Deploy px-manager
+  hosts: proxy_manager
+  become: true
+
+  vars:
+    px_manager_user: px-manager
+    px_manager_group: px-manager
+    px_manager_home: /srv/px_manager
+    px_manager_bin_dir: "{{ px_manager_home }}/bin"
+    px_manager_data_dir: "{{ px_manager_home }}/data"
+    px_manager_build_dir: /tmp/px-manager-build
+    px_manager_service_name: px-manager
+    px_manager_service_port: 8888
+    px_manager_uv_path: /usr/local/bin/uv
+    px_manager_uv_installer: /tmp/uv-installer.sh
+    px_manager_cookie_env: "{{ px_manager_home }}/px-manager.env"
+    px_manager_source_files:
+      - main.py
+      - pyproject.toml
+      - uv.lock
+      - px-manager.spec
+    px_manager_source_dirs:
+      - templates
+      - static
+      - tools
+
+  pre_tasks:
+    - name: Assert required inventory data
+      ansible.builtin.assert:
+        that:
+          - admin_user is defined
+          - proxy_users is defined
+          - proxy_hosts is defined
+
+    - name: Build hosts data from inventory proxy hosts
+      ansible.builtin.set_fact:
+        px_manager_hosts_data: "{{ (px_manager_hosts_data | default([])) + [{'host': item.value.http_domain, 'code': item.value.country_code, 'title': item.value.title}] }}"
+      loop: "{{ proxy_hosts | dict2items }}"
+
+    - name: Install build prerequisites
+      ansible.builtin.package:
+        name:
+          - ca-certificates
+          - curl
+          - python3
+        state: present
+
+    - name: Check uv binary
+      ansible.builtin.stat:
+        path: "{{ px_manager_uv_path }}"
+      register: px_manager_uv_stat
+
+    - name: Download uv installer
+      ansible.builtin.get_url:
+        url: https://astral.sh/uv/install.sh
+        dest: "{{ px_manager_uv_installer }}"
+        mode: "0755"
+      when: not px_manager_uv_stat.stat.exists
+
+    - name: Install uv
+      ansible.builtin.command:
+        cmd: sh {{ px_manager_uv_installer }}
+      environment:
+        UV_INSTALL_DIR: /usr/local/bin
+      when: not px_manager_uv_stat.stat.exists
+
+  tasks:
+    - name: Ensure px-manager group exists
+      ansible.builtin.group:
+        name: "{{ px_manager_group }}"
+        system: true
+
+    - name: Ensure px-manager user exists and cannot log in
+      ansible.builtin.user:
+        name: "{{ px_manager_user }}"
+        group: "{{ px_manager_group }}"
+        home: "{{ px_manager_home }}"
+        create_home: true
+        shell: /usr/sbin/nologin
+        system: true
+        password_lock: true
+
+    - name: Ensure runtime directories exist
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ px_manager_home }}"
+          owner: "{{ px_manager_user }}"
+          group: "{{ px_manager_group }}"
+          mode: "0750"
+        - path: "{{ px_manager_bin_dir }}"
+          owner: root
+          group: "{{ px_manager_group }}"
+          mode: "0750"
+        - path: "{{ px_manager_data_dir }}"
+          owner: "{{ px_manager_user }}"
+          group: "{{ px_manager_group }}"
+          mode: "0750"
+        - path: "{{ px_manager_build_dir }}"
+          owner: root
+          group: root
+          mode: "0755"
+
+    - name: Copy source files for Linux build
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../{{ item }}"
+        dest: "{{ px_manager_build_dir }}/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ px_manager_source_files }}"
+
+    - name: Copy source directories for Linux build
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../{{ item }}"
+        dest: "{{ px_manager_build_dir }}/"
+        owner: root
+        group: root
+        mode: preserve
+      loop: "{{ px_manager_source_dirs }}"
+
+    - name: Copy deploy scripts
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/scripts/"
+        dest: "{{ px_manager_build_dir }}/ansible-scripts/"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Build px-manager binary
+      ansible.builtin.command:
+        cmd: "{{ px_manager_uv_path }} run pyinstaller --clean px-manager.spec"
+        chdir: "{{ px_manager_build_dir }}"
+      register: px_manager_build
+      changed_when: true
+
+    - name: Install px-manager binary
+      ansible.builtin.copy:
+        src: "{{ px_manager_build_dir }}/dist/px-manager"
+        dest: "{{ px_manager_bin_dir }}/px-manager"
+        remote_src: true
+        owner: root
+        group: "{{ px_manager_group }}"
+        mode: "0750"
+      notify: Restart px-manager
+
+    - name: Check cookie secret environment file
+      ansible.builtin.stat:
+        path: "{{ px_manager_cookie_env }}"
+      register: px_manager_cookie_env_stat
+      no_log: true
+
+    - name: Create stable cookie secret
+      ansible.builtin.command:
+        cmd: python3 {{ px_manager_build_dir }}/ansible-scripts/generate_cookie_env.py
+      register: px_manager_cookie_secret
+      changed_when: false
+      no_log: true
+      when: not px_manager_cookie_env_stat.stat.exists
+
+    - name: Install cookie secret environment file
+      ansible.builtin.copy:
+        content: "{{ px_manager_cookie_secret.stdout }}\n"
+        dest: "{{ px_manager_cookie_env }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      when: px_manager_cookie_secret is not skipped
+      notify: Restart px-manager
+
+    - name: Generate passwd.json from inventory proxy_users
+      ansible.builtin.command:
+        argv:
+          - "{{ px_manager_uv_path }}"
+          - run
+          - python
+          - "{{ px_manager_build_dir }}/ansible-scripts/generate_passwd.py"
+          - "{{ px_manager_data_dir }}/passwd.json"
+        chdir: "{{ px_manager_build_dir }}"
+        stdin: "{{ proxy_users | to_json }}"
+      register: px_manager_passwd_json
+      changed_when: false
+      no_log: true
+
+    - name: Install passwd.json
+      ansible.builtin.copy:
+        content: "{{ px_manager_passwd_json.stdout }}\n"
+        dest: "{{ px_manager_data_dir }}/passwd.json"
+        owner: "{{ px_manager_user }}"
+        group: "{{ px_manager_group }}"
+        mode: "0600"
+      no_log: true
+      notify: Restart px-manager
+
+    - name: Install hosts.json
+      ansible.builtin.copy:
+        content: "{{ px_manager_hosts_data | to_nice_json }}\n"
+        dest: "{{ px_manager_data_dir }}/hosts.json"
+        owner: "{{ px_manager_user }}"
+        group: "{{ px_manager_group }}"
+        mode: "0600"
+      notify: Restart px-manager
+
+    - name: Install admin.txt
+      ansible.builtin.copy:
+        content: "{{ admin_user }}\n"
+        dest: "{{ px_manager_data_dir }}/admin.txt"
+        owner: "{{ px_manager_user }}"
+        group: "{{ px_manager_group }}"
+        mode: "0600"
+      notify: Restart px-manager
+
+    - name: Ensure message.md exists
+      ansible.builtin.copy:
+        content: "{{ proxy_manager_message | default('') }}"
+        dest: "{{ px_manager_data_dir }}/message.md"
+        owner: "{{ px_manager_user }}"
+        group: "{{ px_manager_group }}"
+        mode: "0600"
+        force: false
+
+    - name: Install systemd service
+      ansible.builtin.template:
+        src: px-manager.service.j2
+        dest: /etc/systemd/system/{{ px_manager_service_name }}.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart px-manager
+
+    - name: Enable and start px-manager
+      ansible.builtin.systemd:
+        name: "{{ px_manager_service_name }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Remove build sources from host
+      ansible.builtin.file:
+        path: "{{ px_manager_build_dir }}"
+        state: absent
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart px-manager
+      ansible.builtin.systemd:
+        name: "{{ px_manager_service_name }}"
+        state: restarted
+        daemon_reload: true

@@ -20,6 +20,9 @@ from argon2.exceptions import Argon2Error, VerificationError
 SESSION_TTL_SECONDS = 30 * 60
 SESSION_CLEANUP_INTERVAL_MS = 60 * 1000
 SESSION_COOKIE_NAME = "session"
+LOGIN_FAILURE_LIMIT = 5
+BAN_TTL_SECONDS = 3 * 60 * 60
+BAN_CLEANUP_INTERVAL_MS = 60 * 1000
 MESSAGE_HTML_CACHE: dict[str, str] = {}
 LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
@@ -116,6 +119,63 @@ class SessionStore:
             self.delete(session_id)
 
 
+@dataclass(frozen=True)
+class Ban:
+    ip: str
+    expires_at: float
+
+
+class BanStore:
+    def __init__(self, failure_limit: int, ban_ttl_seconds: int):
+        self._failure_limit = failure_limit
+        self._ban_ttl_seconds = ban_ttl_seconds
+        self._failures: dict[str, int] = {}
+        self._bans: dict[str, Ban] = {}
+
+    def is_banned(self, ip: str) -> bool:
+        ban = self._bans.get(ip)
+        if ban is None:
+            return False
+
+        if ban.expires_at <= time.time():
+            self.delete(ip)
+            return False
+
+        return True
+
+    def record_failure(self, ip: str) -> None:
+        if self.is_banned(ip):
+            return
+
+        failures = self._failures.get(ip, 0) + 1
+        if failures >= self._failure_limit:
+            self._bans[ip] = Ban(
+                ip=ip,
+                expires_at=time.time() + self._ban_ttl_seconds,
+            )
+            self._failures.pop(ip, None)
+            return
+
+        self._failures[ip] = failures
+
+    def record_success(self, ip: str) -> None:
+        self._failures.pop(ip, None)
+
+    def active_bans(self) -> list[Ban]:
+        self.cleanup_expired()
+        return sorted(self._bans.values(), key=lambda ban: ban.expires_at)
+
+    def delete(self, ip: str) -> None:
+        self._bans.pop(ip, None)
+        self._failures.pop(ip, None)
+
+    def cleanup_expired(self) -> None:
+        now = time.time()
+        expired_ips = [ip for ip, ban in self._bans.items() if ban.expires_at <= now]
+        for ip in expired_ips:
+            self.delete(ip)
+
+
 class BaseHandler(tornado.web.RequestHandler):
     @property
     def password_store(self) -> PasswordStore:
@@ -124,6 +184,10 @@ class BaseHandler(tornado.web.RequestHandler):
     @property
     def session_store(self) -> SessionStore:
         return self.application.settings["session_store"]
+
+    @property
+    def ban_store(self) -> BanStore:
+        return self.application.settings["ban_store"]
 
     @property
     def hosts_data(self) -> list[dict]:
@@ -140,6 +204,18 @@ class BaseHandler(tornado.web.RequestHandler):
     @property
     def is_admin(self) -> bool:
         return self.current_user is not None and self.current_user == self.admin_user
+
+    @property
+    def client_ip(self) -> str:
+        forwarded_for = self.request.headers.get("X-Forwarded-For")
+        if forwarded_for:
+            return forwarded_for.split(",", 1)[0].strip()
+
+        real_ip = self.request.headers.get("X-Real-IP")
+        if real_ip:
+            return real_ip.strip()
+
+        return self.request.remote_ip
 
     def get_current_user(self):
         session = self.get_session()
@@ -182,6 +258,17 @@ class BaseHandler(tornado.web.RequestHandler):
 
 class IndexHandler(BaseHandler):
     def get(self):
+        if self.ban_store.is_banned(self.client_ip):
+            self.set_status(403)
+            self.render(
+                "index.html",
+                error="Too many failed login attempts. Try again later.",
+                message="",
+                message_html="",
+                is_admin=False,
+            )
+            return
+
         message = read_message(self.data_dir)
         self.render(
             "index.html",
@@ -194,8 +281,21 @@ class IndexHandler(BaseHandler):
     def post(self):
         username = self.get_body_argument("username", "")
         password = self.get_body_argument("password", "")
+        client_ip = self.client_ip
+
+        if self.ban_store.is_banned(client_ip):
+            self.set_status(403)
+            self.render(
+                "index.html",
+                error="Too many failed login attempts. Try again later.",
+                message="",
+                message_html="",
+                is_admin=False,
+            )
+            return
 
         if not self.password_store.verify(username, password):
+            self.ban_store.record_failure(client_ip)
             self.set_status(401)
             self.render(
                 "index.html",
@@ -206,6 +306,7 @@ class IndexHandler(BaseHandler):
             )
             return
 
+        self.ban_store.record_success(client_ip)
         session_id = self.session_store.create(username, password)
         self.set_secure_cookie(
             SESSION_COOKIE_NAME,
@@ -245,11 +346,23 @@ class AdminHandler(BaseHandler):
             self.finish("Forbidden")
 
     def get(self):
-        self.render("admin.html", message=read_message(self.data_dir), saved=False)
+        self.render(
+            "admin.html",
+            message=read_message(self.data_dir),
+            saved=False,
+            active_bans=self.ban_store.active_bans(),
+            format_timestamp=format_timestamp,
+        )
 
     def post(self):
         write_message(self.data_dir, self.get_body_argument("message", ""))
-        self.render("admin.html", message=read_message(self.data_dir), saved=True)
+        self.render(
+            "admin.html",
+            message=read_message(self.data_dir),
+            saved=True,
+            active_bans=self.ban_store.active_bans(),
+            format_timestamp=format_timestamp,
+        )
 
 
 class ApiHandler(BaseHandler):
@@ -389,11 +502,16 @@ def write_message(data_dir: pathlib.Path, message: str) -> None:
     (data_dir / "message.md").write_text(message.strip())
 
 
+def format_timestamp(timestamp: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+
+
 def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Application:
     hosts_data = json.loads((data_dir / "hosts.json").read_text())
     admin_user = read_optional_text(data_dir / "admin.txt") or None
 
     session_store = SessionStore(SESSION_TTL_SECONDS)
+    ban_store = BanStore(LOGIN_FAILURE_LIMIT, BAN_TTL_SECONDS)
     return tornado.web.Application(
         [
             (r"/", IndexHandler),
@@ -411,6 +529,7 @@ def make_app(data_dir: pathlib.Path, cookie_secret: str) -> tornado.web.Applicat
         password_store=PasswordStore.from_file(data_dir / "passwd.json"),
         hosts_data=hosts_data,
         session_store=session_store,
+        ban_store=ban_store,
     )
 
 
@@ -449,6 +568,11 @@ def main(
         SESSION_CLEANUP_INTERVAL_MS,
     )
     session_cleanup.start()
+    ban_cleanup = tornado.ioloop.PeriodicCallback(
+        app.settings["ban_store"].cleanup_expired,
+        BAN_CLEANUP_INTERVAL_MS,
+    )
+    ban_cleanup.start()
     click.echo(f"Listening on http://{host}:{port}")
     tornado.ioloop.IOLoop.current().start()
 
