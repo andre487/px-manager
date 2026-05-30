@@ -49,6 +49,13 @@ BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 AUTH_LOG = logging.getLogger("px_manager.auth")
 BAN_LOG = logging.getLogger("px_manager.ban")
+ERROR_LOG = logging.getLogger("px_manager.error")
+ERROR_PAGE_COPY = {
+    400: ("Некорректный запрос", "Проверьте адрес или параметры запроса."),
+    403: ("Доступ закрыт", "У этой сессии нет доступа к запрошенной странице."),
+    404: ("Страница не найдена", "Такой страницы в PX Manager нет."),
+    405: ("Метод не поддерживается", "Эта страница не принимает выбранный метод запроса."),
+}
 CLIENT_HINT_HEADERS = (
     "Sec-CH-UA",
     "Sec-CH-UA-Full-Version-List",
@@ -470,6 +477,33 @@ class BaseHandler(tornado.web.RequestHandler):
         self.set_status(204)
         self.finish()
 
+    def write_error(self, status_code: int, **kwargs) -> None:
+        if status_code >= 500 and not getattr(self, "_error_logged", False):
+            log_request_error(
+                self,
+                status_code,
+                kwargs.get("exc_info"),
+            )
+        self.render_error_page(status_code)
+
+    def log_exception(self, typ, value, tb) -> None:
+        self._error_logged = True
+        log_request_error(
+            self,
+            500,
+            (typ, value, tb),
+        )
+
+    def render_error_page(self, status_code: int) -> None:
+        title, message = get_error_page_copy(status_code)
+        self.set_status(status_code)
+        self.render(
+            "error.html",
+            status_code=status_code,
+            title=title,
+            message=message,
+        )
+
     def get_current_user(self):
         session = self.get_session()
         if session is None:
@@ -618,6 +652,12 @@ class RobotsHandler(tornado.web.RequestHandler):
     def get(self):
         self.set_header("Content-Type", "text/plain; charset=utf-8")
         self.write(resource_path("static", "robots.txt").read_text())
+
+
+class ErrorPageHandler(BaseHandler):
+    def prepare(self):
+        self.render_error_page(404)
+        raise tornado.web.Finish()
 
 
 class AdminHandler(BaseHandler):
@@ -1626,6 +1666,42 @@ def format_timestamp(timestamp: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
 
 
+def get_error_page_copy(status_code: int) -> tuple[str, str]:
+    if status_code in ERROR_PAGE_COPY:
+        return ERROR_PAGE_COPY[status_code]
+    if status_code >= 500:
+        return (
+            "Внутренняя ошибка",
+            "Запрос не удалось обработать. Попробуйте повторить позже.",
+        )
+    return ("Ошибка запроса", "Запрос завершился с ошибкой.")
+
+
+def log_request_error(
+    handler: tornado.web.RequestHandler,
+    status_code: int,
+    exc_info,
+) -> None:
+    client = get_access_log_client(handler)
+    error = "-"
+    if exc_info:
+        error = str(exc_info[1]) or exc_info[0].__name__
+
+    ERROR_LOG.error(
+        "request_failed status=%d method=%s uri=%s ip=%s user=%s os=%s browser=%s device=%s error=%s",
+        status_code,
+        handler.request.method,
+        handler.request.uri,
+        get_access_log_ip(handler),
+        get_access_log_username(handler),
+        format_log_value(client.os),
+        format_log_value(client.browser),
+        format_log_value(client.device),
+        format_log_value(error),
+        exc_info=exc_info,
+    )
+
+
 def set_client_hint_headers(handler: tornado.web.RequestHandler) -> None:
     handler.set_header("Accept-CH", CLIENT_HINT_HEADER_VALUE)
     handler.set_header("Critical-CH", CLIENT_HINT_HEADER_VALUE)
@@ -1671,6 +1747,11 @@ def configure_logging(log_dir: pathlib.Path) -> None:
         BAN_LOG,
         tag="ban",
         log_file=log_dir / "ban.log",
+    )
+    configure_tagged_logger(
+        ERROR_LOG,
+        tag="error",
+        log_file=log_dir / "error.log",
     )
 
 
@@ -1900,6 +1981,7 @@ def make_app(
             "httponly": True,
             "samesite": "Strict",
         },
+        default_handler_class=ErrorPageHandler,
         static_path=str(resource_path("static")),
         template_path=str(resource_path("templates")),
         data_dir=data_dir,
@@ -1943,7 +2025,7 @@ def make_app(
     ),
     default=cur_dir / "logs",
     show_default=True,
-    help="Directory for access/auth/ban log files.",
+    help="Directory for access/auth/ban/error log files.",
 )
 @click.option(
     "--state-dir",
