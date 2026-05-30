@@ -1,4 +1,9 @@
 .health-page {
+  --info-bg: #e9f3ff;
+  --info-text: #123f6d;
+}
+
+.health-page {
   place-items: start center;
 }
 
@@ -89,6 +94,11 @@
   background: var(--success-bg);
 }
 
+.status-na {
+  color: var(--info-text);
+  background: var(--info-bg);
+}
+
 .status-error {
   color: #8a1f11;
   background: #fde8e4;
@@ -160,6 +170,11 @@
 }
 
 @media (prefers-color-scheme: dark) {
+  .health-page {
+    --info-bg: #10273e;
+    --info-text: #c7e4ff;
+  }
+
   .status-error,
   .health-error {
     color: #ffd0ca;

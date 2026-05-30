@@ -58,6 +58,14 @@ button:hover {
   background: var(--success-bg);
 }
 
+.error {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  color: #8a1f11;
+  background: #fde8e4;
+}
+
 .bans {
   margin-top: 28px;
 }
@@ -95,6 +103,11 @@ button:hover {
 }
 
 @media (prefers-color-scheme: dark) {
+  .error {
+    color: #ffd0ca;
+    background: #4a1711;
+  }
+
   textarea {
     background: var(--surface);
     color: #e8edf2;

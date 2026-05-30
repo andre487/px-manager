@@ -1,6 +1,8 @@
 import html
 import hashlib
 import asyncio
+import base64
+import ipaddress
 import json
 import logging
 import pathlib
@@ -13,7 +15,7 @@ import time
 from dataclasses import dataclass
 from functools import lru_cache
 from logging.handlers import RotatingFileHandler
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import click
 import dns.asyncresolver
@@ -26,6 +28,13 @@ import tornado.log
 import tornado.httpserver
 import tornado.ioloop
 import tornado.web
+from telethon.network.connection.tcpmtproxy import (
+    ConnectionTcpMTProxyAbridged,
+    ConnectionTcpMTProxyIntermediate,
+    ConnectionTcpMTProxyRandomizedIntermediate,
+)
+from telethon.network.mtprotoplainsender import MTProtoPlainSender
+from telethon.tl.functions import ReqPqMultiRequest
 from user_agents import parse as parse_user_agent
 from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error, VerificationError
@@ -44,6 +53,21 @@ BAN_TTL_SECONDS = 3 * 60 * 60
 BAN_CLEANUP_INTERVAL_MS = 60 * 1000
 MESSAGE_HTML_CACHE: dict[str, str] = {}
 HEALTH_RESULT_CACHE: dict[tuple[str, str], tuple[float, dict[str, object]]] = {}
+ALL_HEALTH_CHECKS = ("dns", "ping", "connect", "head")
+TG_HEALTH_CHECKS = ("dns", "ping", "connect")
+TG_HEALTH_REQUEST_CHECKS = ("dns", "ping", "connect", "head")
+TELEGRAM_TEST_DCS = (
+    ("149.154.175.53", 443, 1),
+    ("149.154.167.50", 443, 2),
+    ("149.154.175.100", 443, 3),
+    ("149.154.167.91", 443, 4),
+    ("91.108.56.130", 443, 5),
+)
+TELEGRAM_MTPROXY_CONNECTIONS = (
+    ("abridged", ConnectionTcpMTProxyAbridged),
+    ("intermediate", ConnectionTcpMTProxyIntermediate),
+    ("randomized_intermediate", ConnectionTcpMTProxyRandomizedIntermediate),
+)
 LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
@@ -432,6 +456,10 @@ class BaseHandler(tornado.web.RequestHandler):
         return self.application.settings["hosts_data"]
 
     @property
+    def health_hosts_data(self) -> list[dict]:
+        return get_health_hosts_data(self.hosts_data, self.data_dir)
+
+    @property
     def data_dir(self) -> pathlib.Path:
         return self.application.settings["data_dir"]
 
@@ -538,6 +566,22 @@ class BaseHandler(tornado.web.RequestHandler):
         self.set_status(403)
         self.finish({"error": "forbidden"})
         return None
+
+    def get_allowed_health_host_for_check(self, check_name: str) -> dict | None:
+        host = self.get_query_argument("host", "")
+        host_data = find_host_data(self.health_hosts_data, host)
+        if host_data is None:
+            self.set_status(400)
+            self.finish({"error": "host is not allowed"})
+            return None
+
+        health_checks = host_data.get("health_checks") or ALL_HEALTH_CHECKS
+        if check_name not in health_checks:
+            self.set_status(400)
+            self.finish({"error": "check is not allowed for host"})
+            return None
+
+        return host_data
 
 
 class IndexHandler(BaseHandler):
@@ -679,18 +723,36 @@ class AdminHandler(BaseHandler):
             message=read_message(self.data_dir),
             tg_proxies=read_tg_proxies_text(self.data_dir),
             saved=False,
+            error=None,
             active_bans=self.ban_store.active_bans(),
             format_timestamp=format_timestamp,
         )
 
     def post(self):
-        write_message(self.data_dir, self.get_body_argument("message", ""))
-        write_tg_proxies(self.data_dir, self.get_body_argument("tg_proxies", ""))
+        message = self.get_body_argument("message", "")
+        tg_proxies = self.get_body_argument("tg_proxies", "")
+        validation_error = validate_tg_proxies(tg_proxies)
+        if validation_error:
+            self.set_status(400)
+            self.render(
+                "admin.html",
+                message=message,
+                tg_proxies=tg_proxies,
+                saved=False,
+                error=validation_error,
+                active_bans=self.ban_store.active_bans(),
+                format_timestamp=format_timestamp,
+            )
+            return
+
+        write_message(self.data_dir, message)
+        write_tg_proxies(self.data_dir, tg_proxies)
         self.render(
             "admin.html",
             message=read_message(self.data_dir),
             tg_proxies=read_tg_proxies_text(self.data_dir),
             saved=True,
+            error=None,
             active_bans=self.ban_store.active_bans(),
             format_timestamp=format_timestamp,
         )
@@ -713,7 +775,7 @@ class HealthPageHandler(BaseHandler):
             raise tornado.web.Finish()
 
     def get(self):
-        self.render("health.html", hosts_data=self.hosts_data)
+        self.render("health.html", hosts_data=self.health_hosts_data)
 
 
 class ApiHandler(BaseHandler):
@@ -781,13 +843,7 @@ class HealthConnectHandler(BaseHandler):
         self.write(result)
 
     def get_allowed_health_host(self) -> dict | None:
-        host = self.get_query_argument("host", "")
-        host_data = find_host_data(self.hosts_data, host)
-        if host_data is None:
-            self.set_status(400)
-            self.finish({"error": "host is not allowed"})
-            return None
-        return host_data
+        return self.get_allowed_health_host_for_check("connect")
 
 
 class HealthDnsHandler(BaseHandler):
@@ -825,13 +881,7 @@ class HealthDnsHandler(BaseHandler):
         self.write(result)
 
     def get_allowed_health_host(self) -> dict | None:
-        host = self.get_query_argument("host", "")
-        host_data = find_host_data(self.hosts_data, host)
-        if host_data is None:
-            self.set_status(400)
-            self.finish({"error": "host is not allowed"})
-            return None
-        return host_data
+        return self.get_allowed_health_host_for_check("dns")
 
 
 class HealthHeadHandler(BaseHandler):
@@ -858,11 +908,18 @@ class HealthHeadHandler(BaseHandler):
             "status": "error",
             "status_code": None,
             "status_line": None,
+            "request_kind": "telegram" if host_data.get("source") == "tg-proxies" else "https",
             "error": None,
         }
 
         writer: asyncio.StreamWriter | None = None
         try:
+            if host_data.get("source") == "tg-proxies":
+                result.update(await run_tg_proxy_request_check(host_data))
+                set_cached_health_result("proxy_request", host, result)
+                self.write(result)
+                return
+
             port = get_host_port(host_data)
             result["port"] = port
             ssl_context = ssl.create_default_context()
@@ -919,13 +976,7 @@ class HealthHeadHandler(BaseHandler):
         self.write(result)
 
     def get_allowed_health_host(self) -> dict | None:
-        host = self.get_query_argument("host", "")
-        host_data = find_host_data(self.hosts_data, host)
-        if host_data is None:
-            self.set_status(400)
-            self.finish({"error": "host is not allowed"})
-            return None
-        return host_data
+        return self.get_allowed_health_host_for_check("head")
 
 
 class HealthPingHandler(BaseHandler):
@@ -964,13 +1015,7 @@ class HealthPingHandler(BaseHandler):
         self.write(result)
 
     def get_allowed_health_host(self) -> dict | None:
-        host = self.get_query_argument("host", "")
-        host_data = find_host_data(self.hosts_data, host)
-        if host_data is None:
-            self.set_status(400)
-            self.finish({"error": "host is not allowed"})
-            return None
-        return host_data
+        return self.get_allowed_health_host_for_check("ping")
 
 
 class ProxyListGenerateHandler(BaseHandler):
@@ -1113,6 +1158,44 @@ def find_host_data(hosts_data: list[dict], host: str) -> dict | None:
     return None
 
 
+def get_health_hosts_data(hosts_data: list[dict], data_dir: pathlib.Path) -> list[dict]:
+    result = []
+    seen_hosts = set()
+    for item in hosts_data:
+        host = item.get("host")
+        if not isinstance(host, str) or not host:
+            continue
+        health_item = dict(item)
+        health_item["health_checks"] = get_health_checks_for_host(
+            host,
+            ALL_HEALTH_CHECKS,
+        )
+        result.append(health_item)
+        seen_hosts.add(host)
+
+    for item in parse_tg_proxy_health_hosts(read_tg_proxies_text(data_dir)):
+        if item["host"] in seen_hosts:
+            continue
+        result.append(dict(item))
+        seen_hosts.add(item["host"])
+
+    return result
+
+
+def get_health_checks_for_host(host: str, checks: tuple[str, ...]) -> list[str]:
+    if is_ip_address(host):
+        return [check for check in checks if check != "dns"]
+    return list(checks)
+
+
+def is_ip_address(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
 def get_selected_host_data(hosts_data: list[dict]) -> dict | None:
     for item in hosts_data:
         if item.get("selected"):
@@ -1202,6 +1285,214 @@ async def run_ping(host: str) -> dict[str, object]:
         result["error"] = "100% packet loss"
 
     return result
+
+
+async def run_tg_proxy_request_check(host_data: dict) -> dict[str, object]:
+    proxy_kind = host_data.get("proxy_kind")
+    if proxy_kind == "mtproxy":
+        return await run_mtproxy_request_check(host_data)
+    if proxy_kind == "socks5":
+        return await run_socks5_request_check(host_data)
+
+    return {
+        "ok": False,
+        "status": "error",
+        "error": "unsupported Telegram proxy type",
+    }
+
+
+async def run_mtproxy_request_check(host_data: dict) -> dict[str, object]:
+    errors = []
+    for dc_host, dc_port, dc_id in TELEGRAM_TEST_DCS:
+        dc_errors = []
+        for transport_name, connection_class in TELEGRAM_MTPROXY_CONNECTIONS:
+            result = await run_mtproxy_request_check_for_dc(
+                host_data,
+                dc_host,
+                dc_port,
+                dc_id,
+                transport_name,
+                connection_class,
+            )
+            if result["ok"]:
+                return result
+            dc_errors.append(f"{transport_name}: {result['error']}")
+        errors.append(f"dc{dc_id}: {', '.join(dc_errors)}")
+
+    return {
+        "ok": False,
+        "status": "error",
+        "status_code": None,
+        "status_line": None,
+        "error": "; ".join(errors) if errors else "MTProxy request failed",
+    }
+
+
+async def run_mtproxy_request_check_for_dc(
+    host_data: dict,
+    dc_host: str,
+    dc_port: int,
+    dc_id: int,
+    transport_name: str,
+    connection_class,
+) -> dict[str, object]:
+    connection = None
+    try:
+        host = host_data["host"]
+        port = get_host_port(host_data)
+        secret = normalize_mtproxy_secret(host_data["secret"])
+        connection = connection_class(
+            dc_host,
+            dc_port,
+            dc_id,
+            loggers=get_telethon_loggers(),
+            proxy=(host, port, secret),
+        )
+        await asyncio.wait_for(connection.connect(timeout=5), timeout=7)
+        sender = MTProtoPlainSender(connection, loggers=get_telethon_loggers())
+        nonce = secrets.randbits(127)
+        response = await asyncio.wait_for(
+            sender.send(ReqPqMultiRequest(nonce)),
+            timeout=7,
+        )
+        if getattr(response, "nonce", None) != nonce:
+            raise ValueError("Telegram response nonce mismatch")
+
+        return {
+            "ok": True,
+            "status": "responded",
+            "status_code": None,
+            "status_line": f"OK dc{dc_id}/{transport_name}",
+            "error": None,
+        }
+    except Exception as error:
+        return {
+            "ok": False,
+            "status": "error",
+            "status_code": None,
+            "status_line": None,
+            "error": format_health_error(error),
+        }
+    finally:
+        if connection is not None:
+            await connection.disconnect()
+
+
+def normalize_mtproxy_secret(secret: str) -> str:
+    return get_mtproxy_secret_bytes(secret).hex()
+
+
+def get_mtproxy_secret_mode(secret: str) -> str:
+    secret_bytes = get_mtproxy_secret_bytes(secret)
+    if len(secret_bytes) > 17 and secret_bytes[0] == 0xEE:
+        return "tls_domain"
+    if secret_bytes and secret_bytes[0] == 0xDD:
+        return "randomized_intermediate"
+    if secret_bytes and secret_bytes[0] == 0xEE:
+        return "tls"
+    return "standard"
+
+
+def get_mtproxy_secret_bytes(secret: str) -> bytes:
+    hex_secret = secret[2:] if secret[:2] in {"ee", "dd"} else secret
+    if len(hex_secret) >= 32:
+        try:
+            secret_bytes = bytes.fromhex(secret)
+        except ValueError:
+            pass
+        else:
+            return secret_bytes
+
+    padded_secret = secret + "=" * (-len(secret) % 4)
+    return base64.urlsafe_b64decode(padded_secret.encode())
+
+
+def format_health_error(error: Exception) -> str:
+    if isinstance(error, asyncio.TimeoutError):
+        return "timeout"
+    return str(error) or error.__class__.__name__
+
+
+async def run_socks5_request_check(host_data: dict) -> dict[str, object]:
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host_data["host"], get_host_port(host_data)),
+            timeout=5,
+        )
+        writer.write(b"\x05\x01\x00")
+        await asyncio.wait_for(writer.drain(), timeout=2)
+        greeting = await asyncio.wait_for(reader.readexactly(2), timeout=5)
+        if greeting != b"\x05\x00":
+            raise ValueError("SOCKS5 server rejected no-auth method")
+
+        target = b"telegram.org"
+        writer.write(
+            b"\x05\x01\x00\x03"
+            + bytes([len(target)])
+            + target
+            + (443).to_bytes(2, "big")
+        )
+        await asyncio.wait_for(writer.drain(), timeout=2)
+        response = await asyncio.wait_for(reader.readexactly(4), timeout=5)
+        if response[0] != 5:
+            raise ValueError("invalid SOCKS5 response")
+        if response[1] != 0:
+            raise ValueError(f"SOCKS5 CONNECT failed with code {response[1]}")
+
+        address_type = response[3]
+        if address_type == 1:
+            await asyncio.wait_for(reader.readexactly(4), timeout=5)
+        elif address_type == 3:
+            length = await asyncio.wait_for(reader.readexactly(1), timeout=5)
+            await asyncio.wait_for(reader.readexactly(length[0]), timeout=5)
+        elif address_type == 4:
+            await asyncio.wait_for(reader.readexactly(16), timeout=5)
+        else:
+            raise ValueError("invalid SOCKS5 address type")
+        await asyncio.wait_for(reader.readexactly(2), timeout=5)
+
+        return {
+            "ok": True,
+            "status": "responded",
+            "status_code": None,
+            "status_line": "SOCKS5 CONNECT telegram.org:443 OK",
+            "error": None,
+        }
+    except Exception as error:
+        return {
+            "ok": False,
+            "status": "error",
+            "status_code": None,
+            "status_line": None,
+            "error": str(error) or error.__class__.__name__,
+        }
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+
+@lru_cache(maxsize=1)
+def get_telethon_loggers():
+    base_logger = logging.getLogger("px_manager.telethon")
+    base_logger.propagate = False
+    if not base_logger.handlers:
+        base_logger.addHandler(logging.NullHandler())
+
+    class TelethonLoggers(dict):
+        def __missing__(self, key):
+            if key.startswith("telethon."):
+                key = key.split(".", maxsplit=1)[1]
+            logger = base_logger.getChild(key)
+            self[key] = logger
+            return logger
+
+    return TelethonLoggers()
 
 
 async def resolve_host_addresses(host: str) -> dict[str, object]:
@@ -1628,6 +1919,99 @@ def read_tg_proxies(data_dir: pathlib.Path) -> list[str]:
         for line in read_tg_proxies_text(data_dir).splitlines()
         if line.strip().startswith("tg://")
     ]
+
+
+def validate_tg_proxies(tg_proxies: str) -> str | None:
+    try:
+        parse_tg_proxy_health_hosts(tg_proxies)
+    except ValueError as error:
+        return str(error)
+    return None
+
+
+@lru_cache(maxsize=32)
+def parse_tg_proxy_health_hosts(tg_proxies: str) -> tuple[dict, ...]:
+    hosts = []
+    seen_hosts = set()
+    for line_number, raw_line in enumerate(tg_proxies.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        host_data = parse_tg_proxy_health_host(line, line_number)
+        if host_data["host"] in seen_hosts:
+            continue
+        hosts.append(host_data)
+        seen_hosts.add(host_data["host"])
+
+    return tuple(hosts)
+
+
+def parse_tg_proxy_health_host(line: str, line_number: int) -> dict:
+    parsed = urlparse(line)
+    if parsed.scheme != "tg":
+        raise ValueError(f"Строка {line_number}: ожидается tg:// URL.")
+    if parsed.netloc not in {"proxy", "socks"}:
+        raise ValueError(f"Строка {line_number}: поддерживаются tg://proxy и tg://socks.")
+
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    host = get_single_query_value(query, "server")
+    if not host:
+        raise ValueError(f"Строка {line_number}: не указан параметр server.")
+    if not is_valid_tg_proxy_host(host):
+        raise ValueError(f"Строка {line_number}: некорректный server.")
+
+    port_value = get_single_query_value(query, "port")
+    if not port_value:
+        raise ValueError(f"Строка {line_number}: не указан параметр port.")
+
+    try:
+        port = int(port_value)
+    except ValueError:
+        raise ValueError(f"Строка {line_number}: port должен быть числом.") from None
+    if port < 1 or port > 65535:
+        raise ValueError(f"Строка {line_number}: port должен быть от 1 до 65535.")
+
+    proxy_kind = "mtproxy" if parsed.netloc == "proxy" else "socks5"
+    secret = get_single_query_value(query, "secret")
+    if proxy_kind == "mtproxy" and not secret:
+        raise ValueError(f"Строка {line_number}: не указан параметр secret.")
+    mtproxy_secret_mode = None
+    if proxy_kind == "mtproxy":
+        try:
+            mtproxy_secret_mode = get_mtproxy_secret_mode(secret)
+        except Exception:
+            raise ValueError(f"Строка {line_number}: некорректный secret.") from None
+
+    health_checks = TG_HEALTH_REQUEST_CHECKS
+    if mtproxy_secret_mode == "tls_domain" or (
+        proxy_kind == "mtproxy" and is_ip_address(host)
+    ):
+        health_checks = TG_HEALTH_CHECKS
+
+    return {
+        "host": host,
+        "port": port,
+        "title": f"Telegram {host}",
+        "source": "tg-proxies",
+        "proxy_kind": proxy_kind,
+        "secret": secret,
+        "mtproxy_secret_mode": mtproxy_secret_mode,
+        "health_checks": get_health_checks_for_host(host, health_checks),
+    }
+
+
+def get_single_query_value(query: dict[str, list[str]], name: str) -> str:
+    values = query.get(name) or []
+    return values[0].strip() if values else ""
+
+
+def is_valid_tg_proxy_host(host: str) -> bool:
+    if any(char.isspace() for char in host):
+        return False
+    if "/" in host or ":" in host:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9.-]+", host))
 
 
 def compile_message_html(message: str) -> str:

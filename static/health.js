@@ -80,6 +80,10 @@
       return "RTT " + rtt + ", loss " + loss;
     }
 
+    if (kind === "head" && data.request_kind === "telegram" && data.status_line) {
+      return data.status_line;
+    }
+
     var suffix = data.status_code ? " (" + data.status_code + ")" : "";
     return "OK" + suffix;
   }
@@ -138,10 +142,29 @@
 
     var rows = document.querySelectorAll(".health-row");
     rows.forEach(function (row) {
-      check(row, "connect", "/api/health/connect");
-      check(row, "dns", "/api/health/dns");
-      check(row, "head", "/api/health/head");
-      check(row, "ping", "/api/health/ping");
+      var checks = (row.getAttribute("data-health-checks") || "")
+        .split(",")
+        .filter(Boolean);
+      if (!checks.length) {
+        checks = ["dns", "ping", "connect", "head"];
+      }
+
+      [
+        ["dns", "/api/health/dns"],
+        ["ping", "/api/health/ping"],
+        ["connect", "/api/health/connect"],
+        ["head", "/api/health/head"]
+      ].forEach(function (item) {
+        if (checks.indexOf(item[0]) === -1) {
+          var status = findStatus(row, item[0]);
+          if (status) {
+            setStatus(status, "status-na", "N/A");
+          }
+          return;
+        }
+
+        check(row, item[0], item[1]);
+      });
     });
   }
 

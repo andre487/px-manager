@@ -22,7 +22,7 @@
         <p class="empty health-empty">Прокси не настроены.</p>
       {% end %}
       {% for item in hosts_data %}
-        <article class="health-row" data-host="{{ escape(item["host"]) }}">
+        <article class="health-row" data-host="{{ escape(item["host"]) }}" data-health-checks="{{ ",".join(item.get("health_checks", [])) }}">
           <div class="health-proxy">
             <h2>
               {% if item.get("title") %}

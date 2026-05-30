@@ -12,6 +12,7 @@
   <main>
     <h1>Админка</h1>
     {% if saved %}<p class="saved">Сообщение сохранено.</p>{% end %}
+    {% if error %}<p class="error">{{ escape(error) }}</p>{% end %}
     <form method="post" action="/admin">
       {% module xsrf_form_html() %}
       <label>
@@ -23,7 +24,7 @@
         Прокси для Telegram
         <textarea name="tg_proxies">{{ tg_proxies }}</textarea>
       </label>
-      <p class="hint">Один URI вида tg:// на строку.</p>
+      <p class="hint">Один URI вида tg:// на строку. Пустые строки допустимы.</p>
       <button type="submit">Сохранить</button>
     </form>
     <div class="nav">
