@@ -80,7 +80,7 @@
       return "RTT " + rtt + ", loss " + loss;
     }
 
-    if (kind === "head" && data.request_kind === "telegram" && data.status_line) {
+    if (kind === "head" && data.status_line) {
       return data.status_line;
     }
 

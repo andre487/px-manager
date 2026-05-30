@@ -52,8 +52,7 @@
 
 .health-checks {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 14px;
+  gap: 10px;
 }
 
 .health-check {
@@ -61,10 +60,6 @@
   grid-template-columns: 76px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
-}
-
-.health-check-dns {
-  grid-column: 1 / -1;
 }
 
 .health-label {
@@ -163,10 +158,6 @@
     grid-template-columns: 1fr;
     gap: 16px;
     padding: 20px 18px;
-  }
-
-  .health-checks {
-    grid-template-columns: 1fr;
   }
 
   .health-check {

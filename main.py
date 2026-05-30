@@ -68,6 +68,10 @@ TELEGRAM_MTPROXY_CONNECTIONS = (
     ("intermediate", ConnectionTcpMTProxyIntermediate),
     ("randomized_intermediate", ConnectionTcpMTProxyRandomizedIntermediate),
 )
+IP_ECHO_ENDPOINTS = (
+    ("ifconfig.me", 443, "/ip"),
+    ("api.ipify.org", 443, "/"),
+)
 LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
@@ -896,7 +900,9 @@ class HealthHeadHandler(BaseHandler):
             return
 
         host = host_data["host"]
-        cached_result = get_cached_health_result("proxy_request", host)
+        username, password = self.authenticated_credentials  # type: ignore
+        cache_key = f"{host}\0{username}"
+        cached_result = get_cached_health_result("proxy_request", cache_key)
         if cached_result is not None:
             self.write(cached_result)
             return
@@ -908,71 +914,30 @@ class HealthHeadHandler(BaseHandler):
             "status": "error",
             "status_code": None,
             "status_line": None,
-            "request_kind": "telegram" if host_data.get("source") == "tg-proxies" else "https",
+            "request_kind": "telegram"
+            if host_data.get("source") == "tg-proxies"
+            else "https",
             "error": None,
         }
 
-        writer: asyncio.StreamWriter | None = None
         try:
             if host_data.get("source") == "tg-proxies":
                 result.update(await run_tg_proxy_request_check(host_data))
-                set_cached_health_result("proxy_request", host, result)
+                set_cached_health_result("proxy_request", cache_key, result)
                 self.write(result)
                 return
 
-            port = get_host_port(host_data)
-            result["port"] = port
-            ssl_context = ssl.create_default_context()
-            _reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(
-                    host,
-                    port,
-                    ssl=ssl_context,
-                    server_hostname=host,
-                ),
-                timeout=2,
+            result.update(
+                await run_https_proxy_request_check(
+                    host_data,
+                    username,
+                    password,
+                )
             )
-            request = (
-                f"CONNECT example.com:443 HTTP/1.1\r\n"
-                f"Host: example.com:443\r\n"
-                f"Connection: close\r\n\r\n"
-            )
-            writer.write(request.encode("ascii"))
-            await asyncio.wait_for(writer.drain(), timeout=2)
-            status_line_bytes = await asyncio.wait_for(
-                _reader.readline(),
-                timeout=5,
-            )
-            status_line = status_line_bytes.decode("iso-8859-1", "replace").strip()
-            result["status_line"] = status_line
-            status_match = re.match(
-                r"^HTTP/\d(?:\.\d)?\s+(\d{3})(?:\s+(.*))?$",
-                status_line,
-            )
-            if status_match is None:
-                raise ValueError("proxy returned a non-HTTP response")
-
-            status_code = int(status_match.group(1))
-            result["status_code"] = status_code
-            result["status"] = "responded"
-            if status_code == 407:
-                result["ok"] = True
-            elif status_code == 200:
-                result["error"] = "proxy allowed CONNECT without authentication"
-            else:
-                reason = status_match.group(2) or "unexpected proxy response"
-                result["error"] = f"HTTP {status_code} {reason}"
         except Exception as error:
-            result["error"] = str(error) or error.__class__.__name__
-        finally:
-            if writer is not None:
-                writer.close()
-                try:
-                    await writer.wait_closed()
-                except Exception:
-                    pass
+            result["error"] = format_health_error(error)
 
-        set_cached_health_result("proxy_request", host, result)
+        set_cached_health_result("proxy_request", cache_key, result)
         self.write(result)
 
     def get_allowed_health_host(self) -> dict | None:
@@ -1285,6 +1250,181 @@ async def run_ping(host: str) -> dict[str, object]:
         result["error"] = "100% packet loss"
 
     return result
+
+
+async def run_https_proxy_request_check(
+    host_data: dict,
+    username: str,
+    password: str,
+) -> dict[str, object]:
+    errors = []
+    for target_host, target_port, target_path in IP_ECHO_ENDPOINTS:
+        result = await run_https_proxy_request_check_endpoint(
+            host_data,
+            username,
+            password,
+            target_host,
+            target_port,
+            target_path,
+        )
+        if result["ok"]:
+            return result
+        errors.append(f"{target_host}: {result['error']}")
+
+    return {
+        "ok": False,
+        "status": "error",
+        "status_code": None,
+        "status_line": None,
+        "request_kind": "https",
+        "error": "; ".join(errors) if errors else "proxy request failed",
+    }
+
+
+async def run_https_proxy_request_check_endpoint(
+    host_data: dict,
+    username: str,
+    password: str,
+    target_host: str,
+    target_port: int,
+    target_path: str,
+) -> dict[str, object]:
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
+    try:
+        proxy_host = host_data["host"]
+        proxy_port = get_host_port(host_data)
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(
+                proxy_host,
+                proxy_port,
+                ssl=ssl.create_default_context(),
+                server_hostname=proxy_host,
+            ),
+            timeout=5,
+        )
+        credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+        connect_request = (
+            f"CONNECT {target_host}:{target_port} HTTP/1.1\r\n"
+            f"Host: {target_host}:{target_port}\r\n"
+            f"Proxy-Authorization: Basic {credentials}\r\n"
+            f"Connection: keep-alive\r\n\r\n"
+        )
+        writer.write(connect_request.encode("ascii"))
+        await asyncio.wait_for(writer.drain(), timeout=2)
+        status_line, headers = await read_http_response_head(reader)
+        status_code, reason = parse_http_status_line(status_line)
+        if status_code != 200:
+            raise ValueError(f"CONNECT HTTP {status_code} {reason}".strip())
+
+        loop = asyncio.get_running_loop()
+        transport = writer.transport
+        protocol = transport.get_protocol()
+        tls_transport = await asyncio.wait_for(
+            loop.start_tls(
+                transport,
+                protocol,
+                ssl.create_default_context(),
+                server_hostname=target_host,
+            ),
+            timeout=5,
+        )
+        writer._transport = tls_transport  # type: ignore[attr-defined]
+        request = (
+            f"GET {target_path} HTTP/1.1\r\n"
+            f"Host: {target_host}\r\n"
+            f"User-Agent: px-manager/health\r\n"
+            f"Accept: text/plain\r\n"
+            f"Connection: close\r\n\r\n"
+        )
+        writer.write(request.encode("ascii"))
+        await asyncio.wait_for(writer.drain(), timeout=2)
+        response_status_line, response_headers = await read_http_response_head(reader)
+        response_code, response_reason = parse_http_status_line(response_status_line)
+        if response_code < 200 or response_code >= 300:
+            raise ValueError(
+                f"{target_host} HTTP {response_code} {response_reason}".strip()
+            )
+
+        body = await read_http_response_body(reader, response_headers)
+        ip = extract_ip_echo(body)
+        if not ip:
+            raise ValueError(f"{target_host} returned no IP")
+
+        return {
+            "ok": True,
+            "status": "responded",
+            "status_code": response_code,
+            "status_line": f"{target_host}: {ip}",
+            "request_kind": "https",
+            "error": None,
+        }
+    except Exception as error:
+        return {
+            "ok": False,
+            "status": "error",
+            "status_code": None,
+            "status_line": None,
+            "request_kind": "https",
+            "error": format_health_error(error),
+        }
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+
+async def read_http_response_head(
+    reader: asyncio.StreamReader,
+) -> tuple[str, dict[str, str]]:
+    status_line = (
+        await asyncio.wait_for(reader.readline(), timeout=5)
+    ).decode("iso-8859-1", "replace").strip()
+    headers = {}
+    while True:
+        line = await asyncio.wait_for(reader.readline(), timeout=5)
+        if line in {b"\r\n", b"\n", b""}:
+            break
+        text = line.decode("iso-8859-1", "replace")
+        name, sep, value = text.partition(":")
+        if sep:
+            headers[name.strip().lower()] = value.strip()
+
+    return status_line, headers
+
+
+def parse_http_status_line(status_line: str) -> tuple[int, str]:
+    status_match = re.match(r"^HTTP/\d(?:\.\d)?\s+(\d{3})(?:\s+(.*))?$", status_line)
+    if status_match is None:
+        raise ValueError("proxy returned a non-HTTP response")
+    return int(status_match.group(1)), status_match.group(2) or ""
+
+
+async def read_http_response_body(
+    reader: asyncio.StreamReader,
+    headers: dict[str, str],
+) -> str:
+    content_length = headers.get("content-length")
+    if content_length is not None:
+        data = await asyncio.wait_for(
+            reader.readexactly(int(content_length)),
+            timeout=5,
+        )
+    else:
+        data = await asyncio.wait_for(reader.read(4096), timeout=5)
+    return data.decode("utf-8", "replace").strip()
+
+
+def extract_ip_echo(body: str) -> str:
+    match = re.search(
+        r"\b(?:\d{1,3}\.){3}\d{1,3}\b|"
+        r"\b[0-9a-fA-F]{0,4}:[0-9a-fA-F:]{2,}\b",
+        body,
+    )
+    return match.group(0) if match else ""
 
 
 async def run_tg_proxy_request_check(host_data: dict) -> dict[str, object]:
