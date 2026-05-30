@@ -75,6 +75,10 @@
   white-space: pre;
 }
 
+.health-status[data-check="dns"] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
 .status-loading {
   color: var(--muted);
   background: var(--surface-soft);

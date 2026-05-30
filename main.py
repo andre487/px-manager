@@ -1206,12 +1206,23 @@ async def run_ping(host: str) -> dict[str, object]:
 
 async def resolve_host_addresses(host: str) -> dict[str, object]:
     system_task = asyncio.create_task(resolve_host_with_system_dns(host))
-    google_task = asyncio.create_task(resolve_host_with_google_dns(host))
-    system_result, google_result = await asyncio.gather(system_task, google_task)
-    ok = bool(system_result["ok"] and google_result["ok"])
+    google_task = asyncio.create_task(resolve_host_with_public_dns(host, "8.8.8.8"))
+    cloudflare_task = asyncio.create_task(
+        resolve_host_with_public_dns(host, "1.1.1.1")
+    )
+    system_result, google_result, cloudflare_result = await asyncio.gather(
+        system_task,
+        google_task,
+        cloudflare_task,
+    )
+    ok = bool(system_result["ok"] and google_result["ok"] and cloudflare_result["ok"])
     errors = [
         f"{name}: {result['error']}"
-        for name, result in (("system", system_result), ("8.8.8.8", google_result))
+        for name, result in (
+            ("system", system_result),
+            ("8.8.8.8", google_result),
+            ("1.1.1.1", cloudflare_result),
+        )
         if result["error"]
     ]
     return {
@@ -1219,6 +1230,7 @@ async def resolve_host_addresses(host: str) -> dict[str, object]:
         "status": "resolved" if ok else "error",
         "system": system_result,
         "google": google_result,
+        "cloudflare": cloudflare_result,
         "error": "; ".join(errors) if errors else None,
     }
 
@@ -1237,9 +1249,12 @@ async def resolve_host_with_system_dns(host: str) -> dict[str, object]:
     return build_dns_result(bool(addresses), addresses, None if addresses else "no records")
 
 
-async def resolve_host_with_google_dns(host: str) -> dict[str, object]:
+async def resolve_host_with_public_dns(
+    host: str,
+    nameserver: str,
+) -> dict[str, object]:
     resolver = dns.asyncresolver.Resolver(configure=False)
-    resolver.nameservers = ["8.8.8.8"]
+    resolver.nameservers = [nameserver]
     resolver.lifetime = 5
     resolver.timeout = 2
     tasks = [

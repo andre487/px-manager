@@ -87,9 +87,15 @@
   function formatDnsStatus(data) {
     var system = data.system || {};
     var google = data.google || {};
+    var cloudflare = data.cloudflare || {};
 
-    return "System: " + formatDnsResolverResult(system) +
-      "\nGoogle:  " + formatDnsResolverResult(google);
+    return formatDnsLine("System", system) +
+      "\n" + formatDnsLine("Google", google) +
+      "\n" + formatDnsLine("Cloudflare", cloudflare);
+  }
+
+  function formatDnsLine(label, result) {
+    return (label + ":").padEnd(12, " ") + formatDnsResolverResult(result);
   }
 
   function formatDnsResolverResult(result) {
