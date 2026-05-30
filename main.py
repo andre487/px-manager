@@ -26,6 +26,7 @@ import tornado.log
 import tornado.httpserver
 import tornado.ioloop
 import tornado.web
+from user_agents import parse as parse_user_agent
 from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error, VerificationError
 
@@ -48,6 +49,15 @@ BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 AUTH_LOG = logging.getLogger("px_manager.auth")
 BAN_LOG = logging.getLogger("px_manager.ban")
+CLIENT_HINT_HEADERS = (
+    "Sec-CH-UA",
+    "Sec-CH-UA-Full-Version-List",
+    "Sec-CH-UA-Mobile",
+    "Sec-CH-UA-Model",
+    "Sec-CH-UA-Platform",
+    "Sec-CH-UA-Platform-Version",
+)
+CLIENT_HINT_HEADER_VALUE = ", ".join(CLIENT_HINT_HEADERS)
 
 cur_dir = pathlib.Path.cwd()
 
@@ -344,6 +354,7 @@ class BaseHandler(tornado.web.RequestHandler):
         self.set_header("X-Frame-Options", "DENY")
         self.set_header("Referrer-Policy", "same-origin")
         self.set_header("Content-Security-Policy", build_csp_header())
+        set_client_hint_headers(self)
         self.set_cors_headers()
 
     @property
@@ -396,6 +407,7 @@ class BaseHandler(tornado.web.RequestHandler):
         self.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.set_header("Access-Control-Allow-Headers", "Content-Type, X-XSRFToken")
         self.set_header("Vary", "Origin")
+        append_vary_header(self, CLIENT_HINT_HEADERS)
 
     def options(self):
         origin = self.request.headers.get("Origin")
@@ -1540,6 +1552,42 @@ def format_timestamp(timestamp: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
 
 
+@dataclass(frozen=True)
+class AccessLogClient:
+    os: str
+    browser: str
+    device: str
+
+
+def set_client_hint_headers(handler: tornado.web.RequestHandler) -> None:
+    handler.set_header("Accept-CH", CLIENT_HINT_HEADER_VALUE)
+    handler.set_header("Critical-CH", CLIENT_HINT_HEADER_VALUE)
+    append_vary_header(handler, CLIENT_HINT_HEADERS)
+
+
+def append_vary_header(
+    handler: tornado.web.RequestHandler,
+    values: tuple[str, ...],
+) -> None:
+    existing = handler._headers.get("Vary")
+    vary_values = []
+    seen = set()
+    if existing:
+        for value in existing.split(","):
+            normalized = value.strip()
+            if normalized:
+                seen.add(normalized.lower())
+                vary_values.append(normalized)
+
+    for value in values:
+        if value.lower() not in seen:
+            vary_values.append(value)
+            seen.add(value.lower())
+
+    if vary_values:
+        handler.set_header("Vary", ", ".join(vary_values))
+
+
 def configure_logging(log_dir: pathlib.Path) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     configure_tagged_logger(
@@ -1598,13 +1646,17 @@ class PxManagerApplication(tornado.web.Application):
             log_method = tornado.log.access_log.error
 
         request_time_ms = 1000.0 * handler.request.request_time()
+        client = get_access_log_client(handler)
         log_method(
-            "%d %s %s ip=%s user=%s %.2fms",
+            "%d %s %s ip=%s user=%s os=%s browser=%s device=%s %.2fms",
             status,
             handler.request.method,
             handler.request.uri,
             get_access_log_ip(handler),
             get_access_log_username(handler),
+            format_log_value(client.os),
+            format_log_value(client.browser),
+            format_log_value(client.device),
             request_time_ms,
         )
 
@@ -1629,6 +1681,116 @@ def get_access_log_username(handler: tornado.web.RequestHandler) -> str:
         return str(handler.current_user)
 
     return "-"
+
+
+def get_access_log_client(handler: tornado.web.RequestHandler) -> AccessLogClient:
+    headers = handler.request.headers
+    user_agent = parse_user_agent(headers.get("User-Agent", ""))
+    os_name = format_name_version(
+        user_agent.os.family,
+        user_agent.os.version_string,
+    )
+    browser = format_name_version(
+        user_agent.browser.family,
+        user_agent.browser.version_string,
+    )
+    device = get_user_agent_device(user_agent)
+
+    platform = parse_client_hint_string(headers.get("Sec-CH-UA-Platform"))
+    platform_version = parse_client_hint_string(
+        headers.get("Sec-CH-UA-Platform-Version")
+    )
+    if platform:
+        os_name = format_name_version(platform, platform_version)
+
+    hint_browser = get_client_hint_browser(
+        headers.get("Sec-CH-UA-Full-Version-List") or headers.get("Sec-CH-UA")
+    )
+    if hint_browser:
+        browser = hint_browser
+
+    model = parse_client_hint_string(headers.get("Sec-CH-UA-Model"))
+    mobile = headers.get("Sec-CH-UA-Mobile")
+    if model:
+        device = model
+    elif mobile == "?1":
+        device = "mobile"
+    elif mobile == "?0" and device == "-":
+        device = "desktop"
+
+    return AccessLogClient(
+        os=os_name or "-",
+        browser=browser or "-",
+        device=device or "-",
+    )
+
+
+def get_user_agent_device(user_agent) -> str:
+    if user_agent.is_bot:
+        return "bot"
+    if user_agent.is_tablet:
+        return "tablet"
+    if user_agent.is_mobile:
+        return "mobile"
+    if user_agent.is_pc:
+        return "desktop"
+    if user_agent.device.family and user_agent.device.family != "Other":
+        return user_agent.device.family
+    return "-"
+
+
+def format_name_version(name: str, version: str | None) -> str:
+    if not name or name == "Other":
+        return "-"
+    if version:
+        return f"{name} {version}"
+    return name
+
+
+def parse_client_hint_string(value: str | None) -> str:
+    if not value:
+        return ""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    return value
+
+
+def get_client_hint_browser(value: str | None) -> str:
+    if not value:
+        return ""
+
+    brands: list[tuple[str, str]] = []
+    for match in re.finditer(r'"([^"]+)";v="([^"]+)"', value):
+        brand, version = match.groups()
+        if "brand" in brand.lower():
+            continue
+        brands.append((brand, version))
+
+    if not brands:
+        return ""
+
+    preferred_names = (
+        "Google Chrome",
+        "Microsoft Edge",
+        "Opera",
+        "Brave",
+        "Chromium",
+    )
+    by_name = {brand: version for brand, version in brands}
+    for name in preferred_names:
+        if name in by_name:
+            return format_name_version(name, by_name[name])
+
+    brand, version = brands[0]
+    return format_name_version(brand, version)
+
+
+def format_log_value(value: str) -> str:
+    if not value or value == "-":
+        return "-"
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def make_app(
