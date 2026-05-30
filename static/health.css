@@ -8,7 +8,7 @@
 }
 
 .health-page main {
-  width: min(100% - 32px, 860px);
+  width: min(100% - 32px, 1040px);
 }
 
 .health-list {
@@ -21,10 +21,10 @@
 
 .health-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
-  gap: 24px;
-  align-items: center;
-  padding: 18px 20px;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(520px, 1.6fr);
+  gap: 28px;
+  align-items: start;
+  padding: 18px 22px;
   background: var(--surface);
 }
 
@@ -52,14 +52,19 @@
 
 .health-checks {
   display: grid;
-  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
 }
 
 .health-check {
   display: grid;
-  grid-template-columns: 78px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 10px;
   align-items: center;
+}
+
+.health-check-dns {
+  grid-column: 1 / -1;
 }
 
 .health-label {
@@ -77,7 +82,7 @@
   font-weight: 650;
   line-height: 1.35;
   overflow-wrap: anywhere;
-  white-space: pre;
+  white-space: pre-wrap;
 }
 
 .health-status[data-check="dns"] {
@@ -158,6 +163,10 @@
     grid-template-columns: 1fr;
     gap: 16px;
     padding: 20px 18px;
+  }
+
+  .health-checks {
+    grid-template-columns: 1fr;
   }
 
   .health-check {

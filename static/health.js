@@ -6,7 +6,7 @@
   }
 
   function setStatus(element, className, text) {
-    element.classList.remove("status-loading", "status-ok", "status-error");
+    element.classList.remove("status-loading", "status-ok", "status-na", "status-error");
     element.classList.add(className);
     element.textContent = text;
   }
