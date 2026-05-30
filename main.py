@@ -545,9 +545,18 @@ class IndexHandler(BaseHandler):
             return
 
         if not self.password_store.verify(username, password):
+            client = get_access_log_client(self)
             self.ban_store.record_login_failure(
                 client_ip,
-                get_access_log_client(self),
+                client,
+            )
+            AUTH_LOG.warning(
+                "login_failure ip=%s user=%s os=%s browser=%s device=%s",
+                client_ip,
+                username or "-",
+                format_log_value(client.os),
+                format_log_value(client.browser),
+                format_log_value(client.device),
             )
             self.set_status(401)
             self.render(
