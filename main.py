@@ -347,13 +347,13 @@ class PersistentBanStore(BanStore):
                 self._bans[ip] = Ban(
                     ip=ip,
                     expires_at=float(expires_at),
-                    os=item.get("os") if isinstance(item.get("os"), str) else "-",
+                    os=item.get("os") if isinstance(item.get("os"), str) else "-", # type: ignore
                     browser=item.get("browser")
                     if isinstance(item.get("browser"), str)
-                    else "-",
+                    else "-", # type: ignore
                     device=item.get("device")
                     if isinstance(item.get("device"), str)
-                    else "-",
+                    else "-", # type: ignore
                 )
 
         self.cleanup_expired()
@@ -487,10 +487,13 @@ class BaseHandler(tornado.web.RequestHandler):
         self.render_error_page(status_code)
 
     def log_exception(self, typ, value, tb) -> None:
+        if isinstance(value, tornado.web.HTTPError) and value.status_code < 500:
+            return
+
         self._error_logged = True
         log_request_error(
             self,
-            500,
+            value.status_code if isinstance(value, tornado.web.HTTPError) else 500,
             (typ, value, tb),
         )
 
