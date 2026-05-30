@@ -154,6 +154,16 @@ class SessionStore:
 class Ban:
     ip: str
     expires_at: float
+    os: str = "-"
+    browser: str = "-"
+    device: str = "-"
+
+
+@dataclass(frozen=True)
+class AccessLogClient:
+    os: str
+    browser: str
+    device: str
 
 
 class BanStore:
@@ -175,20 +185,30 @@ class BanStore:
 
         return True
 
-    def record_login_failure(self, ip: str) -> None:
+    def record_login_failure(
+        self,
+        ip: str,
+        client: AccessLogClient | None = None,
+    ) -> None:
         self._record_failure(
             self._login_failures,
             ip,
             LOGIN_FAILURE_LIMIT,
             failure_type="login",
+            client=client,
         )
 
-    def record_auth_failure(self, ip: str) -> None:
+    def record_auth_failure(
+        self,
+        ip: str,
+        client: AccessLogClient | None = None,
+    ) -> None:
         self._record_failure(
             self._auth_failures,
             ip,
             AUTH_FAILURE_LIMIT,
             failure_type="auth",
+            client=client,
         )
 
     def _record_failure(
@@ -198,6 +218,7 @@ class BanStore:
         failure_limit: int,
         *,
         failure_type: str,
+        client: AccessLogClient | None = None,
     ) -> None:
         if self.is_banned(ip):
             return
@@ -215,14 +236,20 @@ class BanStore:
             self._bans[ip] = Ban(
                 ip=ip,
                 expires_at=expires_at,
+                os=client.os if client else "-",
+                browser=client.browser if client else "-",
+                device=client.device if client else "-",
             )
             BAN_LOG.warning(
-                "ban_created ip=%s failure_type=%s failures=%d limit=%d expires_at=%s",
+                "ban_created ip=%s failure_type=%s failures=%d limit=%d expires_at=%s os=%s browser=%s device=%s",
                 ip,
                 failure_type,
                 len(failures),
                 failure_limit,
                 format_timestamp(expires_at),
+                format_log_value(client.os if client else "-"),
+                format_log_value(client.browser if client else "-"),
+                format_log_value(client.device if client else "-"),
             )
             self._login_failures.pop(ip, None)
             self._auth_failures.pop(ip, None)
@@ -240,7 +267,13 @@ class BanStore:
     def delete(self, ip: str) -> None:
         ban = self._bans.pop(ip, None)
         if ban is not None:
-            BAN_LOG.info("ban_deleted ip=%s", ip)
+            BAN_LOG.info(
+                "ban_deleted ip=%s os=%s browser=%s device=%s",
+                ip,
+                format_log_value(ban.os),
+                format_log_value(ban.browser),
+                format_log_value(ban.device),
+            )
         self._login_failures.pop(ip, None)
         self._auth_failures.pop(ip, None)
 
@@ -304,13 +337,29 @@ class PersistentBanStore(BanStore):
             if not isinstance(ip, str) or not isinstance(expires_at, (int, float)):
                 continue
             if expires_at > now:
-                self._bans[ip] = Ban(ip=ip, expires_at=float(expires_at))
+                self._bans[ip] = Ban(
+                    ip=ip,
+                    expires_at=float(expires_at),
+                    os=item.get("os") if isinstance(item.get("os"), str) else "-",
+                    browser=item.get("browser")
+                    if isinstance(item.get("browser"), str)
+                    else "-",
+                    device=item.get("device")
+                    if isinstance(item.get("device"), str)
+                    else "-",
+                )
 
         self.cleanup_expired()
 
     def _save(self) -> None:
         data = [
-            {"ip": ban.ip, "expires_at": ban.expires_at}
+            {
+                "ip": ban.ip,
+                "expires_at": ban.expires_at,
+                "os": ban.os,
+                "browser": ban.browser,
+                "device": ban.device,
+            }
             for ban in sorted(self._bans.values(), key=lambda item: item.ip)
         ]
         tmp_path = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
@@ -324,6 +373,7 @@ class PersistentBanStore(BanStore):
         failure_limit: int,
         *,
         failure_type: str,
+        client: AccessLogClient | None = None,
     ) -> None:
         before = set(self._bans)
         super()._record_failure(
@@ -331,6 +381,7 @@ class PersistentBanStore(BanStore):
             ip,
             failure_limit,
             failure_type=failure_type,
+            client=client,
         )
         if set(self._bans) != before:
             self._save()
@@ -443,7 +494,10 @@ class BaseHandler(tornado.web.RequestHandler):
         if credentials is not None:
             return credentials
 
-        self.ban_store.record_auth_failure(self.client_ip)
+        self.ban_store.record_auth_failure(
+            self.client_ip,
+            get_access_log_client(self),
+        )
         self.set_status(403)
         self.finish({"error": "forbidden"})
         return None
@@ -491,7 +545,10 @@ class IndexHandler(BaseHandler):
             return
 
         if not self.password_store.verify(username, password):
-            self.ban_store.record_login_failure(client_ip)
+            self.ban_store.record_login_failure(
+                client_ip,
+                get_access_log_client(self),
+            )
             self.set_status(401)
             self.render(
                 "index.html",
@@ -504,7 +561,15 @@ class IndexHandler(BaseHandler):
             return
 
         self.ban_store.record_success(client_ip)
-        AUTH_LOG.info("login_success ip=%s user=%s", client_ip, username)
+        client = get_access_log_client(self)
+        AUTH_LOG.info(
+            "login_success ip=%s user=%s os=%s browser=%s device=%s",
+            client_ip,
+            username,
+            format_log_value(client.os),
+            format_log_value(client.browser),
+            format_log_value(client.device),
+        )
         self.access_log_username = username
         session_id = self.session_store.create(username, password)
         self.set_secure_cookie(
@@ -1550,13 +1615,6 @@ def write_tg_proxies(data_dir: pathlib.Path, tg_proxies: str) -> None:
 
 def format_timestamp(timestamp: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
-
-
-@dataclass(frozen=True)
-class AccessLogClient:
-    os: str
-    browser: str
-    device: str
 
 
 def set_client_hint_headers(handler: tornado.web.RequestHandler) -> None:
