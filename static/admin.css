@@ -50,6 +50,56 @@ button:hover {
   font-size: 13px;
 }
 
+.admin-log-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.log-page {
+  place-items: stretch center;
+}
+
+.log-page main {
+  width: min(100% - 32px, 1180px);
+  min-height: calc(100vh - 40px);
+  margin: 20px 0;
+}
+
+.log-nav {
+  margin: 0 0 18px;
+}
+
+.log-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin: -8px 0 14px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.log-lines {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: calc(100vh - 190px);
+  max-height: calc(100vh - 190px);
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  color: inherit;
+  font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.log-lines code {
+  display: block;
+  min-width: max-content;
+  white-space: pre;
+}
+
 .saved {
   margin: 0 0 14px;
   padding: 10px 12px;
@@ -99,6 +149,16 @@ button:hover {
   button {
     width: 100%;
     padding: 13px 16px;
+  }
+
+  .log-page main {
+    width: min(100% - 24px, 1180px);
+    min-height: calc(100vh - 40px);
+  }
+
+  .log-lines {
+    min-height: calc(100vh - 210px);
+    max-height: calc(100vh - 210px);
   }
 }
 

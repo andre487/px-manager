@@ -46,6 +46,8 @@ TLS_FINGERPRINT_TTL_SECONDS = 6 * 60 * 60
 HEALTH_CACHE_TTL_SECONDS = 25
 LOG_MAX_BYTES = 100 * 1024 * 1024
 LOG_BACKUP_COUNT = 1
+LOG_VIEW_DEFAULT_LINES = 250
+LOG_VIEW_MAX_LINES = 5000
 LOGIN_FAILURE_LIMIT = 5
 AUTH_FAILURE_LIMIT = 20
 FAILURE_WINDOW_SECONDS = 60 * 60
@@ -468,6 +470,10 @@ class BaseHandler(tornado.web.RequestHandler):
         return self.application.settings["data_dir"]
 
     @property
+    def log_dir(self) -> pathlib.Path:
+        return self.application.settings["log_dir"]
+
+    @property
     def admin_user(self) -> str | None:
         return self.application.settings["admin_user"]
 
@@ -711,7 +717,7 @@ class ErrorPageHandler(BaseHandler):
         raise tornado.web.Finish()
 
 
-class AdminHandler(BaseHandler):
+class AdminBaseHandler(BaseHandler):
     def prepare(self):
         if self.current_user is None:
             self.redirect("/")
@@ -721,6 +727,8 @@ class AdminHandler(BaseHandler):
             self.set_status(403)
             self.finish("Доступ запрещён")
 
+
+class AdminHandler(AdminBaseHandler):
     def get(self):
         self.render(
             "admin.html",
@@ -760,6 +768,48 @@ class AdminHandler(BaseHandler):
             active_bans=self.ban_store.active_bans(),
             format_timestamp=format_timestamp,
         )
+
+
+class AdminLogHandler(AdminBaseHandler):
+    LOG_FILES = {
+        "auth.log": "auth.log",
+        "ban.log": "ban.log",
+    }
+
+    def get(self, log_name: str):
+        filename = self.LOG_FILES.get(log_name)
+        if filename is None:
+            self.render_error_page(404)
+            return
+
+        line_count = self.get_log_line_count()
+        order = self.get_log_order()
+        lines = read_tail_lines(self.log_dir / filename, line_count)
+        if order == "desc":
+            lines.reverse()
+
+        self.render(
+            "admin_log.html",
+            title=filename,
+            lines=lines,
+            n=line_count,
+            order=order,
+        )
+
+    def get_log_line_count(self) -> int:
+        try:
+            value = int(self.get_query_argument("n", str(LOG_VIEW_DEFAULT_LINES)))
+        except ValueError:
+            value = LOG_VIEW_DEFAULT_LINES
+
+        return max(1, min(value, LOG_VIEW_MAX_LINES))
+
+    def get_log_order(self) -> str:
+        order = self.get_query_argument("order", "desc").lower()
+        if order not in {"asc", "desc"}:
+            return "desc"
+
+        return order
 
 
 class DocHandler(BaseHandler):
@@ -2061,6 +2111,27 @@ def read_tg_proxies(data_dir: pathlib.Path) -> list[str]:
     ]
 
 
+def read_tail_lines(path: pathlib.Path, line_count: int) -> list[str]:
+    if line_count <= 0 or not path.exists():
+        return []
+
+    block_size = 8192
+    data = bytearray()
+    with path.open("rb") as f:
+        f.seek(0, 2)
+        position = f.tell()
+        newline_count = 0
+        while position > 0 and newline_count <= line_count:
+            read_size = min(block_size, position)
+            position -= read_size
+            f.seek(position)
+            chunk = f.read(read_size)
+            data[:0] = chunk
+            newline_count = data.count(b"\n")
+
+    return data.decode("utf-8", errors="replace").splitlines()[-line_count:]
+
+
 def validate_tg_proxies(tg_proxies: str) -> str | None:
     try:
         parse_tg_proxy_health_hosts(tg_proxies)
@@ -2486,6 +2557,7 @@ def format_log_value(value: str) -> str:
 def make_app(
     data_dir: pathlib.Path,
     config_dir: pathlib.Path,
+    log_dir: pathlib.Path,
     state_dir: pathlib.Path,
     cookie_secret: str,
 ) -> tornado.web.Application:
@@ -2502,6 +2574,7 @@ def make_app(
         [
             (r"/", IndexHandler),
             (r"/admin", AdminHandler),
+            (r"/admin/(auth\.log|ban\.log)", AdminLogHandler),
             (r"/doc", DocHandler),
             (r"/health", HealthPageHandler),
             (r"/logout", LogoutHandler),
@@ -2527,6 +2600,7 @@ def make_app(
         static_path=str(resource_path("static")),
         template_path=str(resource_path("templates")),
         data_dir=data_dir,
+        log_dir=log_dir,
         admin_user=admin_user,
         password_store=PasswordStore.from_file(config_dir / "passwd.json"),
         hosts_data=hosts_data,
@@ -2606,7 +2680,7 @@ def main(
         cookie_secret = secrets.token_urlsafe(32)
 
     configure_logging(log_dir)
-    app = make_app(data_dir, config_dir, state_dir, cookie_secret)
+    app = make_app(data_dir, config_dir, log_dir, state_dir, cookie_secret)
     app.settings["cors_allowed_origins"] = set(cors_origin)
     server = tornado.httpserver.HTTPServer(app)
     server.listen(port, address=host)

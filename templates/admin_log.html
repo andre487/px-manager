@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="{{ static_url("favicon.ico") }}" sizes="any">
+  <link rel="stylesheet" href="{{ static_url("common.css") }}">
+  <link rel="stylesheet" href="{{ static_url("admin.css") }}">
+  <title>{{ escape(title) }} - PX Manager 487</title>
+</head>
+<body class="log-page">
+  <main>
+    <div class="nav log-nav">
+      <a href="/admin">Назад</a>
+    </div>
+    <h1>{{ escape(title) }}</h1>
+    <div class="log-meta">
+      <span>Записей: {{ n }}</span>
+      <span>Порядок: {{ escape(order) }}</span>
+    </div>
+    {% if lines %}
+      <pre class="log-lines">{% for line in lines %}<code>{{ line }}</code>
+{% end %}</pre>
+    {% else %}
+      <p class="empty">Записей нет.</p>
+    {% end %}
+  </main>
+</body>
+</html>
