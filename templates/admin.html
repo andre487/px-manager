@@ -10,7 +10,9 @@
 </head>
 <body>
   <main>
+    <p class="eyebrow">Управление</p>
     <h1>Админка</h1>
+    <p class="page-lead">Контент главной страницы, Telegram-прокси и состояние защиты.</p>
     {% if saved %}<p class="saved">Сообщение сохранено.</p>{% end %}
     {% if error %}<p class="error">{{ escape(error) }}</p>{% end %}
     <form method="post" action="/admin">

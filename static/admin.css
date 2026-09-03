@@ -15,24 +15,24 @@ textarea {
   width: 100%;
   min-height: 180px;
   resize: vertical;
-  padding: 10px 12px;
+  padding: 13px 14px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 11px;
   font: inherit;
   background: var(--surface);
-  color: #17202a;
+  color: var(--text);
 }
 
 textarea:focus {
   border-color: var(--accent);
-  outline: 3px solid #cfe5f8;
+  outline: 3px solid color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 button {
   width: fit-content;
   padding: 10px 16px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 11px;
   font: inherit;
   font-weight: 650;
   color: white;
@@ -48,6 +48,7 @@ button:hover {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
+  line-height: 1.5;
 }
 
 .admin-log-links {
@@ -55,6 +56,9 @@ button:hover {
   flex-wrap: wrap;
   gap: 12px;
 }
+
+.admin-log-links a::before { content: none; }
+.admin-log-links a { padding: 8px 11px; border-radius: 9px; background: var(--surface-soft); font-size: 13px; }
 
 .log-page {
   place-items: stretch center;
@@ -88,7 +92,7 @@ button:hover {
   overflow: auto;
   padding: 12px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 12px;
   background: var(--surface-soft);
   color: inherit;
   font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
@@ -118,6 +122,10 @@ button:hover {
 
 .bans {
   margin-top: 28px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-soft);
 }
 
 .bans h2 {

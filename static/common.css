@@ -1,92 +1,51 @@
 :root {
   color-scheme: light dark;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --accent: #1769aa;
-  --accent-strong: #0f578f;
-  --border: #d8dee8;
-  --muted: #5f6b7a;
-  --surface: #ffffff;
-  --surface-soft: #f5f8fb;
-  --success-bg: #e7f8ed;
-  --success-text: #14532d;
-  --shadow: 0 18px 48px rgba(18, 36, 64, 0.12);
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  --accent: #5b55e7; --accent-strong: #4841cf; --accent-soft: #eeedff;
+  --text: #1c2030; --muted: #697084; --border: #e2e5ed;
+  --surface: rgba(255, 255, 255, .94); --surface-solid: #fff; --surface-soft: #f6f7fa;
+  --success-bg: #e8f8ef; --success-text: #147044;
+  --danger-bg: #fff0ee; --danger-text: #a23a31;
+  --shadow: 0 24px 70px rgba(41, 45, 72, .11), 0 2px 8px rgba(41, 45, 72, .04);
+  --radius: 20px;
 }
-
+* { box-sizing: border-box; }
 body {
-  margin: 0;
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  background: #eef3f7;
-  color: #17202a;
+  margin: 0; min-height: 100vh; display: grid; place-items: center; color: var(--text);
+  background: radial-gradient(circle at 12% 0%, rgba(111,104,255,.13), transparent 34rem),
+    radial-gradient(circle at 92% 100%, rgba(52,190,166,.09), transparent 32rem), #f3f4f8;
+  -webkit-font-smoothing: antialiased;
 }
-
 main {
-  width: min(100% - 32px, 620px);
-  box-sizing: border-box;
-  padding: 28px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
+  width: min(100% - 40px, 680px); margin: 32px 0; padding: 36px;
+  border: 1px solid rgba(226,229,237,.9); border-radius: var(--radius);
+  background: var(--surface); box-shadow: var(--shadow); backdrop-filter: blur(18px);
 }
-
-h1 {
-  margin: 0 0 20px;
-  font-size: 30px;
-  line-height: 1.1;
-  font-weight: 700;
-}
-
-.empty {
-  color: var(--muted);
-}
-
-.nav {
-  margin-top: 18px;
-}
-
-.nav a {
-  color: var(--accent);
-  font-weight: 650;
-  text-decoration: none;
-}
-
-.nav a:hover {
-  text-decoration: underline;
-}
-
+h1 { margin: 0 0 12px; font-size: clamp(30px, 5vw, 40px); line-height: 1.05; letter-spacing: -.035em; font-weight: 760; }
+.eyebrow { margin: 0 0 10px; color: var(--accent); font-size: 12px; font-weight: 760; letter-spacing: .12em; text-transform: uppercase; }
+.page-lead { max-width: 52ch; margin: 0 0 30px; color: var(--muted); font-size: 16px; line-height: 1.6; }
+.empty { color: var(--muted); }
+.nav { margin-top: 28px; }
+.nav a { display: inline-flex; align-items: center; gap: 7px; color: var(--accent); font-weight: 680; text-decoration: none; }
+.nav a::before { content: "←"; transition: transform 160ms ease; }
+.nav a:hover::before { transform: translateX(-3px); }
+a, button, input, textarea { transition: border-color 160ms ease, background 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms ease; }
+:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 28%, transparent); outline-offset: 3px; }
 @media (max-width: 760px) {
-  body {
-    place-items: start center;
-  }
-
-  main {
-    width: min(100% - 24px, 620px);
-    margin: 20px 0;
-    padding: 24px;
-  }
-
-  h1 {
-    margin-bottom: 24px;
-  }
+  body { place-items: start center; }
+  main { width: min(100% - 24px, 680px); margin: 16px 0; padding: 26px 22px; border-radius: 17px; }
+  .page-lead { margin-bottom: 24px; }
 }
-
 @media (prefers-color-scheme: dark) {
   :root {
-    --accent: #6cb7ee;
-    --accent-strong: #91cdf6;
-    --border: #2d3a48;
-    --muted: #aeb8c3;
-    --surface: #111820;
-    --surface-soft: #172331;
-    --success-bg: #12341f;
-    --success-text: #baf3ca;
-    --shadow: none;
+    --accent: #aaa6ff; --accent-strong: #c0bdff; --accent-soft: #29274d;
+    --text: #f1f2f7; --muted: #a6adbd; --border: #343746;
+    --surface: rgba(25,27,36,.94); --surface-solid: #191b24; --surface-soft: #232631;
+    --success-bg: #173b2b; --success-text: #8ee0b4; --danger-bg: #45221f; --danger-text: #ffb4aa;
+    --shadow: 0 24px 70px rgba(0,0,0,.28);
   }
-
-  body {
-    background: #0b1117;
-    color: #e8edf2;
-  }
+  body { background: radial-gradient(circle at 12% 0%, rgba(102,94,235,.16), transparent 34rem),
+    radial-gradient(circle at 92% 100%, rgba(31,137,123,.1), transparent 32rem), #101117; }
+  main { border-color: rgba(52,55,70,.85); }
 }

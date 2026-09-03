@@ -2031,11 +2031,14 @@ def build_mega_proxy_config(
         )
         for index, item in enumerate(hosts_data)
     ]
+    profile_ids = [profile["id"] for profile in profiles]
+    if len(profile_ids) != len(set(profile_ids)):
+        raise ValueError("MegaProxy profile IDs must be unique; set unique profile_id values in hosts.json")
     selected_host = get_selected_host_data(hosts_data)
     selected_index = hosts_data.index(selected_host) if selected_host in hosts_data else 0
     active_profile_id = profiles[selected_index]["id"] if profiles else None
     return {
-        "schema": "dev.megaproxy.config",
+        "schema": "net.megaproxy487.config",
         "version": 7,
         "passwordsIncluded": True,
         "privateKeysIncluded": False,
@@ -2079,7 +2082,8 @@ def build_mega_proxy_profile(
     port = int(host_data.get("port", default_port))
     title = str(host_data.get("title") or host_data.get("code") or host)
     code = str(host_data.get("code", "")).upper()
-    profile_key = f"https\0{username}\0{host.lower()}\0{port}".encode()
+    stable_key = str(host_data.get("profile_id") or title)
+    profile_key = f"https\0{stable_key}".encode()
     profile_id = f"px-manager-{hashlib.sha256(profile_key).hexdigest()}"
     return {
         "id": profile_id,

@@ -12,7 +12,9 @@
     <div class="home-layout{% if current_user and message %} has-content{% end %}">
       <section class="auth">
       {% if current_user %}
+        <p class="eyebrow">Конфигурации прокси</p>
         <h1>PX Manager 487</h1>
+        <p class="lead">Готовые профили для ваших устройств и браузеров.</p>
         <div class="session">
           <span>Вы вошли как <strong>{{ escape(current_user) }}</strong></span>
           <form class="logout" method="post" action="/logout">
@@ -23,11 +25,11 @@
         <div class="download-group">
           <h2>Скачать</h2>
           <div class="actions">
-              <a class="button" href="/api/generate/mega-proxy" download="{{ escape(current_user) }}-mega-proxy.json">MegaProxy.json</a>
-              <a class="button" href="/api/generate/foxy-proxy" download="{{ escape(current_user) }}-foxy-proxy.json">FoxyProxy.json</a>
-              <a class="button" href="/api/generate/super-proxy" download="{{ escape(current_user) }}-super-proxy.txt">SuperProxy.txt</a>
-            <a class="button" href="/api/generate/shadowrocket" download="{{ escape(current_user) }}-shadowrocket.conf">Shadowrocket.conf</a>
-            <a class="button" href="/api/generate/proxy-list" download="{{ escape(current_user) }}-proxy-list.txt">ProxyList.txt</a>
+            <a class="button button-primary" href="/api/generate/mega-proxy" download="{{ escape(current_user) }}-mega-proxy.json"><span>MegaProxy</span><small>Android · JSON</small></a>
+            <a class="button" href="/api/generate/foxy-proxy" download="{{ escape(current_user) }}-foxy-proxy.json"><span>FoxyProxy</span><small>Браузер · JSON</small></a>
+            <a class="button" href="/api/generate/super-proxy" download="{{ escape(current_user) }}-super-proxy.txt"><span>Super Proxy</span><small>Android · TXT</small></a>
+            <a class="button" href="/api/generate/shadowrocket" download="{{ escape(current_user) }}-shadowrocket.conf"><span>Shadowrocket</span><small>iOS · CONF</small></a>
+            <a class="button" href="/api/generate/proxy-list" download="{{ escape(current_user) }}-proxy-list.txt"><span>Proxy List</span><small>Универсальный · TXT</small></a>
           </div>
         </div>
         <nav class="page-links" aria-label="Навигация">
@@ -46,7 +48,9 @@
           </section>
         {% end %}
       {% else %}
-        <h1>px-manager</h1>
+        <p class="eyebrow">Добро пожаловать</p>
+        <h1>PX Manager 487</h1>
+        <p class="lead">Войдите, чтобы скачать персональные конфигурации.</p>
         {% if error %}<p class="error">{{ escape(error) }}</p>{% end %}
         <form method="post" action="/">
           {% module xsrf_form_html() %}
