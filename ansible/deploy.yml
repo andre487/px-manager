@@ -1,6 +1,6 @@
 ---
 - name: Deploy px-manager
-  hosts: proxy_manager
+  hosts: "{{ px_manager_target | default('proxy_manager') }}"
   become: true
 
   vars:
@@ -19,6 +19,8 @@
     px_manager_uv_path: /usr/local/bin/uv
     px_manager_uv_installer: /tmp/uv-installer.sh
     px_manager_cookie_env: "{{ px_manager_config_dir }}/px-manager.env"
+    px_manager_admin_user: andre487
+    px_manager_selected_proxy: am_proxy
     px_manager_source_files:
       - main.py
       - pyproject.toml
@@ -33,16 +35,19 @@
     - name: Assert required inventory data
       ansible.builtin.assert:
         that:
-          - admin_user is defined
-          - proxy_users is defined
-          - proxy_hosts is defined
-          - selected_proxy is defined
-          - selected_proxy in proxy_hosts
+          - megaproxy_users.https is defined
+          - megaproxy_public_https_hosts is defined
+          - megaproxy_public_https_hosts | length > 0
+          - px_manager_selected_proxy in (megaproxy_public_https_hosts | map(attribute='name'))
 
-    - name: Build hosts data from inventory proxy hosts
+    - name: Use HTTPS users from MegaProxy inventory
       ansible.builtin.set_fact:
-        px_manager_hosts_data: "{{ (px_manager_hosts_data | default([])) + [{'host': item.value.http_domain, 'code': item.value.country_code, 'title': item.value.title, 'selected': item.key == selected_proxy}] }}"
-      loop: "{{ proxy_hosts | dict2items }}"
+        proxy_users: "{{ megaproxy_users.https }}"
+
+    - name: Build hosts data from MegaProxy inventory
+      ansible.builtin.set_fact:
+        px_manager_hosts_data: "{{ (px_manager_hosts_data | default([])) + [{'host': item.host, 'port': item.port, 'code': item.code, 'title': item.title, 'selected': item.name == px_manager_selected_proxy}] }}"
+      loop: "{{ megaproxy_public_https_hosts }}"
 
     - name: Install build prerequisites
       ansible.builtin.package:
@@ -240,7 +245,7 @@
 
     - name: Install admin.txt
       ansible.builtin.copy:
-        content: "{{ admin_user }}\n"
+        content: "{{ px_manager_admin_user }}\n"
         dest: "{{ px_manager_config_dir }}/admin.txt"
         owner: root
         group: "{{ px_manager_group }}"
