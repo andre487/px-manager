@@ -57,7 +57,7 @@
 
     - name: Add HTTPS chain hosts from MegaProxy inventory
       ansible.builtin.set_fact:
-        px_manager_hosts_data: "{{ px_manager_hosts_data + [{'host': item.hostname | default((item.entry | regex_replace('_', '-')) ~ '-via-' ~ (item.exit | regex_replace('_', '-')) ~ '.' ~ settings.https_chain_domain, true), 'port': hosts[item.entry].services.https.port, 'code': item.entry.split('_')[0] | upper, 'title': item.title | default(hosts[item.entry].services.https.title | default(item.entry | regex_replace('_proxy$', '') | replace('_', ' ') | upper, true), true), 'selected': (item.entry ~ '_via-' ~ item.exit) == px_manager_selected_proxy}] }}"
+        px_manager_hosts_data: "{{ px_manager_hosts_data + [{'host': item.hostname | default((item.entry | regex_replace('_', '-')) ~ '-via-' ~ (item.exit | regex_replace('_', '-')) ~ '.' ~ settings.https_chain_domain, true), 'port': hosts[item.entry].services.https.port, 'code': item.country_code, 'title': item.title | default(hosts[item.entry].services.https.title | default(item.entry | regex_replace('_proxy$', '') | replace('_', ' ') | upper, true), true), 'selected': (item.entry ~ '_via-' ~ item.exit) == px_manager_selected_proxy}] }}"
       loop: "{{ settings.https_chain_pairs | default([]) }}"
       when: settings.https_chains_enabled | default(false)
 

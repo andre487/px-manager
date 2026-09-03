@@ -65,6 +65,21 @@ class MegaProxyExportTest(unittest.TestCase):
                 default_port="443",
             )
 
+    def test_chain_profile_uses_explicit_exit_country_code(self):
+        profile = build_mega_proxy_profile(
+            {
+                "host": "armenia-via-turkey.example",
+                "title": "TR Chain",
+                "code": "TR",
+            },
+            username="alice",
+            password="secret",
+            default_port="443",
+            color=0,
+        )
+
+        self.assertEqual("TR", profile["countryCode"])
+
 
 if __name__ == "__main__":
     unittest.main()
