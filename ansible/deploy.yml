@@ -35,19 +35,37 @@
     - name: Assert required inventory data
       ansible.builtin.assert:
         that:
-          - megaproxy_users.https is defined
-          - megaproxy_public_https_hosts is defined
-          - megaproxy_public_https_hosts | length > 0
-          - px_manager_selected_proxy in (megaproxy_public_https_hosts | map(attribute='name'))
+          - users.https is defined
+          - hosts is defined
 
     - name: Use HTTPS users from MegaProxy inventory
       ansible.builtin.set_fact:
-        proxy_users: "{{ megaproxy_users.https }}"
+        proxy_users: "{{ users.https }}"
 
-    - name: Build hosts data from MegaProxy inventory
+    - name: Initialize public HTTPS hosts
       ansible.builtin.set_fact:
-        px_manager_hosts_data: "{{ (px_manager_hosts_data | default([])) + [{'host': item.host, 'port': item.port, 'code': item.code, 'title': item.title, 'selected': item.name == px_manager_selected_proxy}] }}"
-      loop: "{{ megaproxy_public_https_hosts }}"
+        px_manager_hosts_data: []
+
+    - name: Add direct HTTPS hosts from MegaProxy inventory
+      ansible.builtin.set_fact:
+        px_manager_hosts_data: "{{ px_manager_hosts_data + [{'host': item.value.services.https.endpoint, 'port': item.value.services.https.port, 'code': item.key.split('_')[0] | upper, 'title': item.value.services.https.title | default(item.key | regex_replace('_proxy$', '') | replace('_', ' ') | upper, true), 'selected': item.key == px_manager_selected_proxy}] }}"
+      loop: "{{ hosts | dict2items }}"
+      when:
+        - item.value.services.https is defined
+        - item.value.services.https.enabled | default(false)
+        - item.value.services.https.direct | default(true)
+
+    - name: Add HTTPS chain hosts from MegaProxy inventory
+      ansible.builtin.set_fact:
+        px_manager_hosts_data: "{{ px_manager_hosts_data + [{'host': item.hostname | default((item.entry | regex_replace('_', '-')) ~ '-via-' ~ (item.exit | regex_replace('_', '-')) ~ '.' ~ settings.https_chain_domain, true), 'port': hosts[item.entry].services.https.port, 'code': item.entry.split('_')[0] | upper, 'title': item.title | default(hosts[item.entry].services.https.title | default(item.entry | regex_replace('_proxy$', '') | replace('_', ' ') | upper, true), true), 'selected': (item.entry ~ '_via-' ~ item.exit) == px_manager_selected_proxy}] }}"
+      loop: "{{ settings.https_chain_pairs | default([]) }}"
+      when: settings.https_chains_enabled | default(false)
+
+    - name: Assert selected public proxy exists
+      ansible.builtin.assert:
+        that:
+          - px_manager_hosts_data | length > 0
+          - px_manager_hosts_data | selectattr('selected') | list | length == 1
 
     - name: Install build prerequisites
       ansible.builtin.package:

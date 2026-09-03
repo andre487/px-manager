@@ -1130,6 +1130,31 @@ class FoxyProxyGenerateHandler(BaseHandler):
         self.write("\n")
 
 
+class MegaProxyGenerateHandler(BaseHandler):
+    def prepare(self):
+        self.authenticated_credentials = self.require_authenticated_credentials()
+        if self.authenticated_credentials is None:
+            return
+
+    def get(self):
+        username, password = self.authenticated_credentials  # type: ignore
+        default_port = self.get_query_argument("port", "443")
+        config = build_mega_proxy_config(
+            self.hosts_data,
+            username=username,
+            password=password,
+            default_port=default_port,
+        )
+
+        self.set_header("Content-Type", "application/json; charset=utf-8")
+        self.set_header(
+            "Content-Disposition",
+            f'attachment; filename="{build_mega_proxy_filename(username)}"',
+        )
+        self.write(json.dumps(config, indent=2, ensure_ascii=False))
+        self.write("\n")
+
+
 class ShadowrocketGenerateHandler(BaseHandler):
     def prepare(self):
         self.authenticated_credentials = self.require_authenticated_credentials()
@@ -1989,6 +2014,96 @@ def build_foxy_proxy_filename(username: str) -> str:
     return f"{safe_username}-foxy-proxy.json"
 
 
+def build_mega_proxy_config(
+    hosts_data: list[dict],
+    *,
+    username: str,
+    password: str,
+    default_port: str,
+) -> dict:
+    profiles = [
+        build_mega_proxy_profile(
+            item,
+            username=username,
+            password=password,
+            default_port=default_port,
+            color=index,
+        )
+        for index, item in enumerate(hosts_data)
+    ]
+    selected_host = get_selected_host_data(hosts_data)
+    selected_index = hosts_data.index(selected_host) if selected_host in hosts_data else 0
+    active_profile_id = profiles[selected_index]["id"] if profiles else None
+    return {
+        "schema": "dev.megaproxy.config",
+        "version": 7,
+        "passwordsIncluded": True,
+        "privateKeysIncluded": False,
+        "activeProfileId": active_profile_id,
+        "alwaysOnProfileId": None,
+        "diagnosticLogLimitMb": 3,
+        "tls": {
+            "fingerprint": "DEFAULT",
+            "customJa3": "",
+        },
+        "ssh": {
+            "fingerprint": "DEFAULT",
+            "authMode": "AUTO",
+            "keepaliveSeconds": 30,
+            "maxChannels": 32,
+            "rotationMinutes": 0,
+            "rotationMb": 0,
+        },
+        "failover": {
+            "mode": "DISABLED",
+            "profileIds": [],
+        },
+        "routing": {
+            "routeAllApps": True,
+            "selectedPackages": [],
+            "bypassLocalNetworks": True,
+        },
+        "profiles": profiles,
+    }
+
+
+def build_mega_proxy_profile(
+    host_data: dict,
+    *,
+    username: str,
+    password: str,
+    default_port: str,
+    color: int,
+) -> dict:
+    host = str(host_data["host"])
+    port = int(host_data.get("port", default_port))
+    title = str(host_data.get("title") or host_data.get("code") or host)
+    code = str(host_data.get("code", "")).upper()
+    profile_key = f"https\0{username}\0{host.lower()}\0{port}".encode()
+    profile_id = f"px-manager-{hashlib.sha256(profile_key).hexdigest()}"
+    return {
+        "id": profile_id,
+        "name": title,
+        "color": color,
+        "countryCode": code if re.fullmatch(r"[A-Z]{2}", code) else "",
+        "proxy": {
+            "type": "HTTPS",
+            "host": host,
+            "port": port,
+            "username": username,
+            "password": password,
+            "allowInvalidProxyCertificate": False,
+        },
+    }
+
+
+def build_mega_proxy_filename(username: str) -> str:
+    safe_username = re.sub(r"[^A-Za-z0-9_.-]+", "_", username).strip("._-")
+    if not safe_username:
+        safe_username = "user"
+    return f"{safe_username}-mega-proxy.json"
+
+
 def build_shadowrocket_config(
     hosts_data: list[dict],
     *,
@@ -2588,6 +2703,7 @@ def make_app(
             (r"/api/generate/proxy-list", ProxyListGenerateHandler),
             (r"/api/generate/super-proxy", SuperProxyGenerateHandler),
             (r"/api/generate/foxy-proxy", FoxyProxyGenerateHandler),
+            (r"/api/generate/mega-proxy", MegaProxyGenerateHandler),
             (r"/api/generate/shadowrocket", ShadowrocketGenerateHandler),
         ],
         cookie_secret=cookie_secret,
