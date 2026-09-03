@@ -1,8 +1,17 @@
 @import url("common.css");
-main { width: min(100% - 40px, 1080px); padding: 38px 0; }
+main {
+  width: min(100% - 40px, 1080px);
+  margin: 0;
+  padding: 38px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
 .home-layout { display: grid; grid-template-columns: minmax(340px, 560px); justify-content: center; align-items: start; gap: 28px; }
 .home-layout.has-content { grid-template-columns: minmax(420px, 560px) minmax(300px, 1fr); }
-.auth, .message { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); backdrop-filter: blur(18px); }
+.auth, .message { border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); backdrop-filter: blur(18px); }
 .auth { width: 100%; padding: 36px; }
 .lead { margin: 0 0 26px; color: var(--muted); line-height: 1.55; }
 form { display: grid; gap: 16px; }
@@ -20,20 +29,20 @@ button:hover { background: var(--accent-strong); transform: translateY(-1px); }
 .download-group, .tg-proxies { margin-top: 30px; }
 .download-group h2, .tg-proxies h2 { margin: 0 0 13px; color: var(--muted); font-size: 13px; font-weight: 720; letter-spacing: .06em; text-transform: uppercase; }
 .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.actions .button { position: relative; display: grid; gap: 4px; min-height: 74px; padding: 14px 42px 14px 15px; border: 1px solid var(--border); color: var(--text); background: var(--surface-solid); }
+.actions .button { position: relative; display: grid; gap: 4px; min-height: 74px; padding: 14px 42px 14px 15px; color: var(--text); background: var(--surface-soft); }
 .actions .button::after { content: "↓"; position: absolute; top: 14px; right: 15px; color: var(--accent); font-size: 18px; }
-.actions .button:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--accent-soft); transform: translateY(-2px); box-shadow: 0 8px 20px rgba(52,48,120,.08); }
+.actions .button:hover { background: var(--accent-soft); transform: translateY(-2px); box-shadow: 0 8px 20px rgba(52,48,120,.08); }
 .actions .button span { align-self: end; }
 .actions .button small { align-self: start; color: var(--muted); font-size: 11px; font-weight: 580; }
-.actions .button-primary { grid-column: 1 / -1; color: #fff; border-color: transparent; background: linear-gradient(135deg, #625ce9, #4c46d2); }
+.actions .button-primary { grid-column: 1 / -1; color: #fff; background: linear-gradient(135deg, #625ce9, #4c46d2); }
 .actions .button-primary::after, .actions .button-primary small { color: rgba(255,255,255,.75); }
 .actions .button-primary:hover { background: linear-gradient(135deg, #716bf0, #514bd9); }
 .page-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .page-links a { padding: 8px 11px; border-radius: 9px; color: var(--muted); background: var(--surface-soft); font-size: 13px; font-weight: 650; text-decoration: none; }
 .page-links a:hover { color: var(--accent); background: var(--accent-soft); }
 .tg-links { display: grid; gap: 8px; }
-.tg-links a { display: block; padding: 11px 13px; border: 1px solid var(--border); border-radius: 10px; color: var(--accent); background: var(--surface-soft); overflow-wrap: anywhere; text-decoration: none; }
-.tg-links a:hover { border-color: var(--accent); }
+.tg-links a { display: block; padding: 11px 13px; border-radius: 10px; color: var(--accent); background: var(--surface-soft); overflow-wrap: anywhere; text-decoration: none; }
+.tg-links a:hover { background: var(--accent-soft); }
 .content { display: grid; gap: 18px; }
 .message { width: 100%; margin: 0; padding: 24px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
 .error { margin: 0 0 16px; padding: 11px 13px; border-radius: 10px; color: var(--danger-text); background: var(--danger-bg); }
