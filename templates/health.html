@@ -17,7 +17,7 @@
   <main>
     <p class="eyebrow">Мониторинг</p>
     <h1>Проверка прокси</h1>
-    <p class="page-lead">Состояние DNS, сети и HTTPS-подключения для каждого сервера.</p>
+    <p class="page-lead">Проверка DNS, сети и запросов через HTTPS- и Telegram-прокси с сервера PX Manager.</p>
 
     <section class="health-list" aria-label="Список прокси">
       {% if not hosts_data %}
@@ -54,6 +54,12 @@
               <span class="health-label">Request</span>
               <span class="health-status status-loading" data-check="head">Проверяется</span>
             </div>
+            {% if item.get("source") != "tg-proxies" %}
+            <div class="health-check">
+              <span class="health-label">Страна выхода</span>
+              <span class="health-status status-loading" data-check="country">Проверяется</span>
+            </div>
+            {% end %}
           </div>
         </article>
       {% end %}

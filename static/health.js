@@ -120,6 +120,9 @@
     }
 
     requestJson(buildUrl(path, host)).then(function (data) {
+      if (kind === "head") {
+        updateCountry(row, data);
+      }
       if (data.ok) {
         setStatus(status, "status-ok", formatSuccessfulStatus(kind, data));
         return;
@@ -130,8 +133,31 @@
     }).catch(function (error) {
       var message = error && error.message ? error.message : "Ошибка запроса";
       setStatus(status, "status-error", message);
+      if (kind === "head") {
+        updateCountry(row, {country_error: message});
+      }
       showError(host + ": " + message);
     });
+  }
+
+  function updateCountry(row, data) {
+    var status = findStatus(row, "country");
+    if (!status) return;
+    var code = data.country_code;
+    if (!code || !/^[A-Z]{2}$/.test(code)) {
+      setStatus(status, "status-na", "Не определена");
+      status.title = data.country_error || data.error || "Выходной IP недоступен";
+      return;
+    }
+    var name = code;
+    try {
+      name = new Intl.DisplayNames(["ru"], {type: "region"}).of(code);
+    } catch (error) {}
+    var flag = Array.from(code).map(function (letter) {
+      return String.fromCodePoint(0x1F1E6 + letter.charCodeAt(0) - 65);
+    }).join("");
+    setStatus(status, "status-ok", flag + " " + name + " (" + code + ")");
+    status.title = "Источник: " + data.country_provider;
   }
 
   function startHealthChecks() {

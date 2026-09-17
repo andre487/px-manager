@@ -23,6 +23,7 @@
     px_manager_selected_proxy: am_proxy
     px_manager_source_files:
       - main.py
+      - mtg_health.py
       - pyproject.toml
       - uv.lock
       - px-manager.spec

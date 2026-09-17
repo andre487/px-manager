@@ -38,12 +38,14 @@ from telethon.tl.functions import ReqPqMultiRequest
 from user_agents import parse as parse_user_agent
 from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error, VerificationError
+from mtg_health import MTGConnection
 
 SESSION_TTL_SECONDS = 30 * 60
 SESSION_CLEANUP_INTERVAL_MS = 60 * 1000
 SESSION_COOKIE_NAME = "session"
 TLS_FINGERPRINT_TTL_SECONDS = 6 * 60 * 60
 HEALTH_CACHE_TTL_SECONDS = 25
+COUNTRY_CACHE_TTL_SECONDS = 5 * 60
 LOG_MAX_BYTES = 100 * 1024 * 1024
 LOG_BACKUP_COUNT = 1
 LOG_VIEW_DEFAULT_LINES = 250
@@ -73,6 +75,12 @@ TELEGRAM_MTPROXY_CONNECTIONS = (
 IP_ECHO_ENDPOINTS = (
     ("ifconfig.me", 443, "/ip"),
     ("api.ipify.org", 443, "/"),
+    ("icanhazip.com", 443, "/"),
+)
+COUNTRY_ENDPOINTS = (
+    ("ifconfig.co", 443, "/country-iso"),
+    ("ipapi.co", 443, "/country_code/"),
+    ("api.country.is", 443, "/"),
 )
 LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
@@ -1275,7 +1283,12 @@ def get_cached_health_result(check_name: str, host: str) -> dict[str, object] | 
         return None
 
     cached_at, result = cached
-    if time.monotonic() - cached_at >= HEALTH_CACHE_TTL_SECONDS:
+    ttl = (
+        COUNTRY_CACHE_TTL_SECONDS
+        if check_name == "country"
+        else HEALTH_CACHE_TTL_SECONDS
+    )
+    if time.monotonic() - cached_at >= ttl:
         HEALTH_RESULT_CACHE.pop(key, None)
         return None
 
@@ -1343,6 +1356,21 @@ async def run_https_proxy_request_check(
             target_path,
         )
         if result["ok"]:
+            country_key = json.dumps(
+                [
+                    host_data["host"],
+                    get_host_port(host_data),
+                    username,
+                    result["exit_ip"],
+                ]
+            )
+            country = get_cached_health_result("country", country_key)
+            if country is None:
+                country = await run_https_proxy_country_check(
+                    host_data, username, password
+                )
+                set_cached_health_result("country", country_key, country)
+            result.update(country)
             return result
         errors.append(f"{target_host}: {result['error']}")
 
@@ -1363,6 +1391,69 @@ async def run_https_proxy_request_check_endpoint(
     target_host: str,
     target_port: int,
     target_path: str,
+    response_kind: str = "ip",
+) -> dict[str, object]:
+    try:
+        async with asyncio.timeout(10):
+            return await fetch_https_proxy_check_endpoint(
+                host_data,
+                username,
+                password,
+                target_host,
+                target_port,
+                target_path,
+                response_kind,
+            )
+    except TimeoutError:
+        return {"ok": False, "error": "Таймаут запроса"}
+
+
+async def run_https_proxy_country_check(host_data, username, password) -> dict:
+    errors = []
+    for target_host, target_port, target_path in COUNTRY_ENDPOINTS:
+        result = await run_https_proxy_request_check_endpoint(
+            host_data,
+            username,
+            password,
+            target_host,
+            target_port,
+            target_path,
+            response_kind="country",
+        )
+        if result["ok"]:
+            return {
+                "country_code": result["country_code"],
+                "country_provider": target_host,
+                "country_error": None,
+            }
+        errors.append(f"{target_host}: {result['error']}")
+    return {
+        "country_code": None,
+        "country_provider": None,
+        "country_error": "; ".join(errors),
+    }
+
+
+def parse_country_response(body: str) -> str:
+    value = body.strip()
+    if value.startswith("{"):
+        value = json.loads(value).get("country")
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[A-Za-z]{2}", value.strip()) is None
+    ):
+        raise ValueError("Некорректный код страны")
+    return value.strip().upper()
+
+
+async def fetch_https_proxy_check_endpoint(
+    host_data: dict,
+    username: str,
+    password: str,
+    target_host: str,
+    target_port: int,
+    target_path: str,
+    response_kind: str,
 ) -> dict[str, object]:
     reader: asyncio.StreamReader | None = None
     writer: asyncio.StreamWriter | None = None
@@ -1422,15 +1513,20 @@ async def run_https_proxy_request_check_endpoint(
             )
 
         body = await read_http_response_body(reader, response_headers)
-        ip = extract_ip_echo(body)
-        if not ip:
-            raise ValueError(f"{target_host} returned no IP")
+        value = (
+            parse_country_response(body)
+            if response_kind == "country"
+            else extract_ip_echo(body)
+        )
+        if not value:
+            raise ValueError(f"Некорректный ответ {target_host}")
 
         return {
             "ok": True,
             "status": "responded",
             "status_code": response_code,
-            "status_line": f"{target_host}: {ip}",
+            "status_line": f"{target_host}: {value}",
+            "country_code" if response_kind == "country" else "exit_ip": value,
             "request_kind": "https",
             "error": None,
         }
@@ -1447,7 +1543,7 @@ async def run_https_proxy_request_check_endpoint(
         if writer is not None:
             writer.close()
             try:
-                await writer.wait_closed()
+                await asyncio.wait_for(writer.wait_closed(), timeout=1)
             except Exception:
                 pass
 
@@ -1482,24 +1578,38 @@ async def read_http_response_body(
     reader: asyncio.StreamReader,
     headers: dict[str, str],
 ) -> str:
-    content_length = headers.get("content-length")
-    if content_length is not None:
-        data = await asyncio.wait_for(
-            reader.readexactly(int(content_length)),
-            timeout=5,
-        )
-    else:
-        data = await asyncio.wait_for(reader.read(4096), timeout=5)
+    limit = 4096
+    data = bytearray()
+    async with asyncio.timeout(5):
+        if headers.get("transfer-encoding", "").lower() == "chunked":
+            while True:
+                line = await reader.readline()
+                size = int(line.split(b";", 1)[0].strip(), 16)
+                if size < 0 or len(data) + size > limit:
+                    raise ValueError("Слишком большой ответ геосервиса")
+                if size == 0:
+                    break
+                data.extend(await reader.readexactly(size))
+                if await reader.readexactly(2) != b"\r\n":
+                    raise ValueError("Некорректный chunked-ответ")
+        elif "content-length" in headers:
+            size = int(headers["content-length"])
+            if not 0 <= size <= limit:
+                raise ValueError("Слишком большой ответ геосервиса")
+            data.extend(await reader.readexactly(size))
+        else:
+            while chunk := await reader.read(limit + 1 - len(data)):
+                data.extend(chunk)
+                if len(data) > limit:
+                    raise ValueError("Слишком большой ответ геосервиса")
     return data.decode("utf-8", "replace").strip()
 
 
 def extract_ip_echo(body: str) -> str:
-    match = re.search(
-        r"\b(?:\d{1,3}\.){3}\d{1,3}\b|"
-        r"\b[0-9a-fA-F]{0,4}:[0-9a-fA-F:]{2,}\b",
-        body,
-    )
-    return match.group(0) if match else ""
+    try:
+        return str(ipaddress.ip_address(body.strip()))
+    except ValueError:
+        return ""
 
 
 async def run_tg_proxy_request_check(host_data: dict) -> dict[str, object]:
@@ -1517,6 +1627,8 @@ async def run_tg_proxy_request_check(host_data: dict) -> dict[str, object]:
 
 
 async def run_mtproxy_request_check(host_data: dict) -> dict[str, object]:
+    if get_mtproxy_secret_mode(host_data["secret"]) == "tls_domain":
+        return await run_mtg_request_check(host_data)
     errors = []
     for dc_host, dc_port, dc_id in TELEGRAM_TEST_DCS:
         dc_errors = []
@@ -1591,6 +1703,48 @@ async def run_mtproxy_request_check_for_dc(
     finally:
         if connection is not None:
             await connection.disconnect()
+
+
+async def run_mtg_request_check(host_data: dict) -> dict[str, object]:
+    started = time.monotonic()
+    errors = []
+    for _, _, dc_id in TELEGRAM_TEST_DCS:
+        connection = MTGConnection(
+            host_data["host"],
+            get_host_port(host_data),
+            get_mtproxy_secret_bytes(host_data["secret"]),
+            dc_id,
+        )
+        try:
+            async with asyncio.timeout(6):
+                await connection.connect()
+                sender = MTProtoPlainSender(connection, loggers=get_telethon_loggers())
+                nonce = secrets.randbits(127)
+                response = await sender.send(ReqPqMultiRequest(nonce))
+                if getattr(response, "nonce", None) != nonce:
+                    raise ValueError("Ответ Telegram содержит неверный nonce")
+            elapsed_ms = round((time.monotonic() - started) * 1000)
+            return {
+                "ok": True,
+                "status": "responded",
+                "status_code": None,
+                "status_line": f"OK dc{dc_id}/Fake TLS · {elapsed_ms} ms",
+                "duration_ms": elapsed_ms,
+                "error": None,
+            }
+        except Exception as error:
+            errors.append(f"DC{dc_id}, {connection.stage}: {format_health_error(error)}")
+            if connection.stage != "Telegram":
+                break
+        finally:
+            await connection.disconnect()
+    return {
+        "ok": False,
+        "status": "error",
+        "status_code": None,
+        "status_line": None,
+        "error": "; ".join(errors),
+    }
 
 
 def normalize_mtproxy_secret(secret: str) -> str:
@@ -2314,8 +2468,10 @@ def parse_tg_proxy_health_host(line: str, line_number: int) -> dict:
             raise ValueError(f"Строка {line_number}: некорректный secret.") from None
 
     health_checks = TG_HEALTH_REQUEST_CHECKS
-    if mtproxy_secret_mode == "tls_domain" or (
-        proxy_kind == "mtproxy" and is_ip_address(host)
+    if (
+        proxy_kind == "mtproxy"
+        and is_ip_address(host)
+        and mtproxy_secret_mode != "tls_domain"
     ):
         health_checks = TG_HEALTH_CHECKS
 
