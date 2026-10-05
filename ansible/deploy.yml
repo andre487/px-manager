@@ -48,6 +48,7 @@
         px_manager_hosts_data: []
 
     - name: Add direct HTTPS hosts from MegaProxy inventory
+      no_log: true
       ansible.builtin.set_fact:
         px_manager_hosts_data: "{{ px_manager_hosts_data + [{'host': item.value.services.https.endpoint, 'port': item.value.services.https.port, 'code': (item.key | regex_replace('^proxy_', '')).split('_')[0] | upper, 'title': item.value.services.https.title | default(item.key | regex_replace('^proxy_|_proxy$', '') | replace('_', ' ') | upper, true), 'selected': item.key == px_manager_selected_proxy}] }}"
       loop: "{{ hosts | dict2items }}"
