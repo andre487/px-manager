@@ -50,7 +50,6 @@
       {% else %}
         <p class="eyebrow">Добро пожаловать</p>
         <h1>PX Manager 487</h1>
-        <p class="lead">Войдите, чтобы скачать персональные конфигурации.</p>
         {% if error %}<p class="error">{{ escape(error) }}</p>{% end %}
         <form method="post" action="/">
           {% module xsrf_form_html() %}
