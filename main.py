@@ -2671,6 +2671,12 @@ def configure_tagged_logger(
     logger.addHandler(file_handler)
 
 
+class NoIndexTransform(tornado.web.OutputTransform):
+    def transform_first_chunk(self, status_code, headers, chunk, finishing):
+        headers["X-Robots-Tag"] = "noindex, nofollow"
+        return status_code, headers, chunk
+
+
 class PxManagerApplication(tornado.web.Application):
     def log_request(self, handler: tornado.web.RequestHandler) -> None:
         status = handler.get_status()
@@ -2845,7 +2851,7 @@ def make_app(
         FAILURE_WINDOW_SECONDS,
         state_dir / "bans.json",
     )
-    return PxManagerApplication(
+    app = PxManagerApplication(
         [
             (r"/", IndexHandler),
             (r"/admin", AdminHandler),
@@ -2884,6 +2890,8 @@ def make_app(
         ban_store=ban_store,
         cors_allowed_origins=set(),
     )
+    app.add_transform(NoIndexTransform)
+    return app
 
 
 @click.command()
