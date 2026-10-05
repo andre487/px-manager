@@ -184,7 +184,7 @@
 
     - name: Build px-manager binary
       ansible.builtin.command:
-        cmd: "{{ px_manager_uv_path }} run pyinstaller --clean px-manager.spec"
+        cmd: "{{ px_manager_uv_path }} run --locked pyinstaller --clean px-manager.spec"
         chdir: "{{ px_manager_build_dir }}"
       register: px_manager_build
       changed_when: true
@@ -234,6 +234,7 @@
         argv:
           - "{{ px_manager_uv_path }}"
           - run
+          - --locked
           - python
           - "{{ px_manager_build_dir }}/ansible-scripts/generate_passwd.py"
           - "{{ px_manager_config_dir }}/passwd.json"
