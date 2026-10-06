@@ -2193,7 +2193,7 @@ def build_mega_proxy_config(
     active_profile_id = profiles[selected_index]["id"] if profiles else None
     return {
         "schema": "net.megaproxy487.config",
-        "version": 7,
+        "version": 8,
         "passwordsIncluded": True,
         "privateKeysIncluded": False,
         "activeProfileId": active_profile_id,
@@ -2251,6 +2251,13 @@ def build_mega_proxy_profile(
             "username": username,
             "password": password,
             "allowInvalidProxyCertificate": False,
+        },
+        "browser": {
+            "knockHost": (
+                "px-knock.jethelix.ru"
+                if host_data.get("probe_resistance_enabled", False)
+                else ""
+            ),
         },
     }
 

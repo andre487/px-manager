@@ -50,7 +50,7 @@
     - name: Add direct HTTPS hosts from MegaProxy inventory
       no_log: true
       ansible.builtin.set_fact:
-        px_manager_hosts_data: "{{ px_manager_hosts_data + [{'host': item.value.services.https.endpoint, 'port': item.value.services.https.port, 'code': (item.key | regex_replace('^proxy_', '')).split('_')[0] | upper, 'title': item.value.services.https.title | default(item.key | regex_replace('^proxy_|_proxy$', '') | replace('_', ' ') | upper, true), 'selected': item.key == px_manager_selected_proxy}] }}"
+        px_manager_hosts_data: "{{ px_manager_hosts_data + [{'host': item.value.services.https.endpoint, 'port': item.value.services.https.port, 'code': (item.key | regex_replace('^proxy_', '')).split('_')[0] | upper, 'title': item.value.services.https.title | default(item.key | regex_replace('^proxy_|_proxy$', '') | replace('_', ' ') | upper, true), 'probe_resistance_enabled': (item.value.services.https.probe_resistance | default({})).enabled | default(false), 'selected': item.key == px_manager_selected_proxy}] }}"
       loop: "{{ hosts | dict2items }}"
       when:
         - item.value.services.https is defined
@@ -59,7 +59,7 @@
 
     - name: Add HTTPS chain hosts from MegaProxy inventory
       ansible.builtin.set_fact:
-        px_manager_hosts_data: "{{ px_manager_hosts_data + [{'host': item.hostname | default((item.entry | regex_replace('_', '-')) ~ '-via-' ~ (item.exit | regex_replace('_', '-')) ~ '.' ~ settings.https_chain_domain, true), 'port': hosts[item.entry].services.https.port, 'code': item.country_code, 'title': item.title | default(hosts[item.entry].services.https.title | default(item.entry | regex_replace('^proxy_|_proxy$', '') | replace('_', ' ') | upper, true), true), 'selected': (item.entry ~ '_via-' ~ item.exit) == px_manager_selected_proxy}] }}"
+        px_manager_hosts_data: "{{ px_manager_hosts_data + [{'host': item.hostname | default((item.entry | regex_replace('_', '-')) ~ '-via-' ~ (item.exit | regex_replace('_', '-')) ~ '.' ~ settings.https_chain_domain, true), 'port': hosts[item.entry].services.https.port, 'code': item.country_code, 'title': item.title | default(hosts[item.entry].services.https.title | default(item.entry | regex_replace('^proxy_|_proxy$', '') | replace('_', ' ') | upper, true), true), 'probe_resistance_enabled': (item.probe_resistance | default(hosts[item.entry].services.https.probe_resistance | default({}), true)).enabled | default(false), 'selected': (item.entry ~ '_via-' ~ item.exit) == px_manager_selected_proxy}] }}"
       loop: "{{ settings.https_chain_pairs | default([]) }}"
       when: settings.https_chains_enabled | default(false)
 

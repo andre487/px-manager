@@ -1,10 +1,14 @@
+import json
+import pathlib
 import unittest
+
+from jsonschema import Draft202012Validator
 
 from main import build_mega_proxy_config, build_mega_proxy_profile
 
 
 class MegaProxyExportTest(unittest.TestCase):
-    def test_exports_schema_version_seven_and_global_settings(self):
+    def test_exports_schema_version_eight_and_global_settings(self):
         config = build_mega_proxy_config(
             [{"host": "proxy.example", "title": "Example", "code": "NL"}],
             username="alice",
@@ -13,12 +17,63 @@ class MegaProxyExportTest(unittest.TestCase):
         )
 
         self.assertEqual("net.megaproxy487.config", config["schema"])
-        self.assertEqual(7, config["version"])
+        self.assertEqual(8, config["version"])
         self.assertEqual(config["profiles"][0]["id"], config["activeProfileId"])
         self.assertEqual("DEFAULT", config["tls"]["fingerprint"])
         self.assertEqual("AUTO", config["ssh"]["authMode"])
         self.assertEqual("DISABLED", config["failover"]["mode"])
         self.assertTrue(config["routing"]["routeAllApps"])
+
+    def test_generated_json_matches_official_schema(self):
+        schema = json.loads(
+            (
+                pathlib.Path(__file__).parent / "schemas" / "megaproxy-v8.schema.json"
+            ).read_text()
+        )
+        Draft202012Validator.check_schema(schema)
+        validator = Draft202012Validator(schema)
+        for hosts in (
+            [{"host": "proxy.example"}],
+            [
+                {
+                    "host": "192.0.2.1",
+                    "port": "8443",
+                    "code": "nl",
+                    "title": "Нидерланды",
+                },
+                {
+                    "host": "chain.example",
+                    "port": 65535,
+                    "code": "TR",
+                    "selected": True,
+                    "probe_resistance_enabled": True,
+                },
+                {
+                    "host": "plain.example",
+                    "code": "invalid",
+                    "probe_resistance_enabled": False,
+                },
+            ],
+        ):
+            with self.subTest(hosts=hosts):
+                config = build_mega_proxy_config(
+                    hosts, username="alice", password="secret", default_port="443"
+                )
+                validator.validate(json.loads(json.dumps(config, ensure_ascii=False)))
+
+    def test_knock_host_is_enabled_only_for_masked_proxies(self):
+        for enabled in (None, False, True):
+            with self.subTest(enabled=enabled):
+                host = {"host": "proxy.example"}
+                if enabled is not None:
+                    host["probe_resistance_enabled"] = enabled
+                config = build_mega_proxy_config(
+                    [host], username="alice", password="secret", default_port="443"
+                )
+                self.assertEqual(
+                    "px-knock.jethelix.ru" if enabled else "",
+                    config["profiles"][0]["browser"]["knockHost"],
+                )
 
     def test_profile_id_survives_endpoint_credentials_and_metadata_changes(self):
         host = {

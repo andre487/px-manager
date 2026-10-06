@@ -1,0 +1,640 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/andre487/MegaProxyConfig/main/schemas/megaproxy-v8.schema.json",
+  "title": "MegaProxy portable configuration, version 8",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "enum": [
+        "net.megaproxy487.config",
+        "dev.megaproxy.config"
+      ]
+    },
+    "version": {
+      "const": 8
+    },
+    "passwordsIncluded": {
+      "type": "boolean"
+    },
+    "privateKeysIncluded": {
+      "type": "boolean"
+    },
+    "activeProfileId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "alwaysOnProfileId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diagnosticLogLimitMb": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "tls": {
+      "$ref": "#/$defs/tls"
+    },
+    "ssh": {
+      "$ref": "#/$defs/ssh"
+    },
+    "failover": {
+      "$ref": "#/$defs/failover"
+    },
+    "routing": {
+      "$ref": "#/$defs/routing"
+    },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/profile"
+      },
+      "maxItems": 1000,
+      "minItems": 1
+    },
+    "browser": {
+      "type": "object",
+      "properties": {
+        "theme": {
+          "type": "string",
+          "enum": [
+            "system",
+            "light",
+            "dark"
+          ]
+        },
+        "language": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "en",
+            "ru"
+          ]
+        },
+        "routing": {
+          "$ref": "#/$defs/browserRouting"
+        },
+        "webRTC": {
+          "type": "string",
+          "enum": [
+            "browser",
+            "default",
+            "default_public_and_private_interfaces",
+            "default_public_interface_only",
+            "disable_non_proxied_udp",
+            "proxy_only",
+            "disabled"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "schema",
+    "version",
+    "profiles"
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "color": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "countryCode": {
+          "type": "string",
+          "maxLength": 2,
+          "pattern": "^([A-Z]{2})?$"
+        },
+        "proxy": {
+          "$ref": "#/$defs/proxy"
+        },
+        "tls": {
+          "$ref": "#/$defs/tls"
+        },
+        "dns": {
+          "$ref": "#/$defs/dns"
+        },
+        "routing": {
+          "$ref": "#/$defs/routing"
+        },
+        "browser": {
+          "$ref": "#/$defs/browserProfile"
+        }
+      },
+      "required": [
+        "id",
+        "proxy"
+      ],
+      "additionalProperties": true
+    },
+    "proxy": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "HTTPS",
+            "HTTPS_JUMP",
+            "SSH",
+            "SSH_JUMP"
+          ]
+        },
+        "host": {
+          "type": "string",
+          "maxLength": 253,
+          "minLength": 1,
+          "pattern": "^(?:[^\\s/:@?#\\\\]+|\\[?(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\\]?)$"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "username": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^[^:\\r\\n]*$"
+        },
+        "password": {
+          "type": "string",
+          "maxLength": 16384,
+          "pattern": "^[^\\r\\n]*$"
+        },
+        "privateKey": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "allowInvalidProxyCertificate": {
+          "type": "boolean"
+        },
+        "sshProfile": {
+          "type": "string",
+          "enum": [
+            "DEFAULT",
+            "OPENSSH_TERMUX",
+            "CONNECTBOT",
+            "JUICESSH",
+            "TERMIUS_ANDROID"
+          ]
+        },
+        "trustedHostKey": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "acceptAnyHostKey": {
+          "type": "boolean"
+        },
+        "jump": {
+          "$ref": "#/$defs/jump"
+        }
+      },
+      "required": [
+        "type",
+        "host",
+        "port"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "HTTPS_JUMP",
+                  "SSH_JUMP"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "jump"
+            ],
+            "properties": {
+              "jump": {
+                "$ref": "#/$defs/jump"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "jump": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "maxLength": 253,
+          "minLength": 1,
+          "pattern": "^(?:[^\\s/:@?#\\\\]+|\\[?(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\\]?)$"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "sameAuthentication": {
+          "type": "boolean",
+          "default": true
+        },
+        "username": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^[^:\\r\\n]*$"
+        },
+        "password": {
+          "type": "string",
+          "maxLength": 16384,
+          "pattern": "^[^\\r\\n]*$"
+        },
+        "privateKey": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "trustedHostKey": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "acceptAnyHostKey": {
+          "type": "boolean"
+        },
+        "allowInvalidProxyCertificate": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "host",
+        "port"
+      ],
+      "additionalProperties": true
+    },
+    "tls": {
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "enum": [
+            "DEFAULT",
+            "CHROME_ANDROID",
+            "FIREFOX_ANDROID",
+            "EDGE_ANDROID",
+            "RANDOMIZED",
+            "SAMSUNG_INTERNET",
+            "YANDEX_BROWSER",
+            "CUSTOM"
+          ]
+        },
+        "customJa3": {
+          "type": "string",
+          "maxLength": 8192
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "routing": {
+      "type": "object",
+      "properties": {
+        "bypassLocalNetworks": {
+          "type": "boolean",
+          "default": true
+        },
+        "routeAllApps": {
+          "type": "boolean"
+        },
+        "selectedPackages": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9_.]+$"
+          },
+          "maxItems": 1000
+        },
+        "allowIpv6": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "dns": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": [
+            "CLOUDFLARE",
+            "GOOGLE",
+            "QUAD9",
+            "YANDEX",
+            "YANDEX_SAFE",
+            "YANDEX_FAMILY",
+            "CUSTOM"
+          ]
+        },
+        "customDohUrl": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "ssh": {
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "enum": [
+            "DEFAULT",
+            "OPENSSH_TERMUX",
+            "CONNECTBOT",
+            "JUICESSH",
+            "TERMIUS_ANDROID"
+          ]
+        },
+        "authMode": {
+          "type": "string",
+          "enum": [
+            "AUTO",
+            "PASSWORD_ONLY",
+            "KEY_ONLY"
+          ]
+        },
+        "keepaliveSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600
+        },
+        "maxChannels": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "rotationMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1440
+        },
+        "rotationMb": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10240
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "failover": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "DISABLED",
+            "SELECTED",
+            "ALL"
+          ]
+        },
+        "profileIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1
+          },
+          "maxItems": 1000,
+          "uniqueItems": true
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "browserProfile": {
+      "type": "object",
+      "properties": {
+        "knockHost": {
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "type": "string",
+              "maxLength": 253,
+              "minLength": 1,
+              "pattern": "^(?:[^\\s/:@?#\\\\]+|\\[?(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\\]?)$"
+            }
+          ]
+        },
+        "bypass": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 253,
+            "minLength": 1,
+            "pattern": "^(?:[^\\s/:@?#\\\\]+|\\[?(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\\]?)$"
+          },
+          "maxItems": 1000,
+          "uniqueItems": true
+        },
+        "authMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "challenge"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "browserRouting": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "domains",
+            "tabs"
+          ]
+        },
+        "domains": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253,
+            "pattern": "^(?:[^\\s*/:@?#\\\\]+|[a-zA-Z0-9*](?:[a-zA-Z0-9.*-]*[a-zA-Z0-9*])?|\\[?(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\\]?)$"
+          },
+          "maxItems": 1000,
+          "uniqueItems": true
+        },
+        "sites": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253,
+            "pattern": "^(?:[^\\s*/:@?#\\\\]+|[a-zA-Z0-9*](?:[a-zA-Z0-9.*-]*[a-zA-Z0-9*])?|\\[?(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\\]?)$"
+          },
+          "maxItems": 1000,
+          "uniqueItems": true
+        },
+        "subscriptions": {
+          "$ref": "#/$defs/browserSubscriptions"
+        },
+        "assignments": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "required": [
+              "domain",
+              "profileId"
+            ],
+            "properties": {
+              "domain": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253,
+                "pattern": "^[^\\s*/:@?#\\\\]+$"
+              },
+              "profileId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "includeSubdomains": {
+                "type": "boolean",
+                "default": true
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "browserSubscriptions": {
+      "type": "object",
+      "properties": {
+        "domainSources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "russia_inside",
+              "russia_outside",
+              "ukraine_inside",
+              "geoblock",
+              "block",
+              "porn",
+              "news",
+              "anime",
+              "hodca",
+              "youtube",
+              "discord",
+              "meta",
+              "twitter",
+              "telegram",
+              "tiktok",
+              "hdrezka",
+              "google_ai",
+              "google_play",
+              "roblox",
+              "cloudflare",
+              "cloudfront",
+              "digitalocean",
+              "hetzner",
+              "ovh"
+            ]
+          },
+          "maxItems": 24,
+          "uniqueItems": true
+        },
+        "siteSources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "russia_inside",
+              "russia_outside",
+              "ukraine_inside",
+              "geoblock",
+              "block",
+              "porn",
+              "news",
+              "anime",
+              "hodca",
+              "youtube",
+              "discord",
+              "meta",
+              "twitter",
+              "telegram",
+              "tiktok",
+              "hdrezka",
+              "google_ai",
+              "google_play",
+              "roblox",
+              "cloudflare",
+              "cloudfront",
+              "digitalocean",
+              "hetzner",
+              "ovh"
+            ]
+          },
+          "maxItems": 24,
+          "uniqueItems": true
+        },
+        "autoUpdate": {
+          "type": "boolean"
+        },
+        "throughProxy": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    }
+  }
+}
