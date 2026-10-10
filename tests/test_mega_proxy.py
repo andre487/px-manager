@@ -2,9 +2,11 @@ import json
 import pathlib
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, Mock, patch
 
 from jsonschema import Draft202012Validator
 from tornado.testing import AsyncHTTPTestCase
+from tornado.httpclient import HTTPClientError
 from tornado.web import create_signed_value
 
 from main import (
@@ -155,6 +157,14 @@ class MegaProxyExportTest(unittest.TestCase):
 
 
 class MegaProxySubscriptionTest(AsyncHTTPTestCase):
+    def setUp(self):
+        super().setUp()
+        client_patch = patch("main.tornado.httpclient.AsyncHTTPClient")
+        self.client_factory = client_patch.start()
+        self.addCleanup(client_patch.stop)
+        self.upstream = self.client_factory.return_value
+        self.upstream.fetch = AsyncMock(side_effect=HTTPClientError(503))
+
     def get_app(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -170,15 +180,18 @@ class MegaProxySubscriptionTest(AsyncHTTPTestCase):
         (root / "subscription.json").write_text(json.dumps(self.subscription))
         return make_app(root, root, root, root, "test-secret")
 
-    def test_export_uses_inventory_subscription_and_session_credentials(self):
+    def export(self, query=""):
         session_id = self._app.settings["session_store"].create("alice", "secret")
         cookie = create_signed_value(
             "test-secret", SESSION_COOKIE_NAME, session_id
         ).decode()
-        response = self.fetch(
-            "/api/generate/mega-proxy",
+        return self.fetch(
+            "/api/generate/mega-proxy" + query,
             headers={"Cookie": f"{SESSION_COOKIE_NAME}={cookie}"},
         )
+
+    def test_export_uses_inventory_subscription_and_session_credentials(self):
+        response = self.export()
         self.assertEqual(200, response.code)
         config = json.loads(response.body)
         self.assertEqual(
@@ -196,6 +209,84 @@ class MegaProxySubscriptionTest(AsyncHTTPTestCase):
         self.assertEqual(
             self.subscription, self._app.settings["mega_proxy_subscription"]
         )
+        self.assertEqual(2, self.upstream.fetch.await_count)
+        self.upstream.close.assert_called_once()
+
+    def test_formats_upstream_json_without_config_validation(self):
+        for config in ({"custom": "Серверный конфиг", "version": 999}, None, []):
+            with self.subTest(config=config):
+                self.upstream.fetch.reset_mock()
+                self.upstream.fetch.side_effect = None
+                self.upstream.fetch.return_value = Mock(
+                    body=json.dumps(config).encode()
+                )
+                response = self.export()
+                self.assertEqual(200, response.code)
+                self.assertEqual(
+                    (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode(),
+                    response.body,
+                )
+                self.assertEqual(
+                    "application/json; charset=utf-8", response.headers["Content-Type"]
+                )
+                self.assertIn(
+                    'filename="alice-mega-proxy.json"',
+                    response.headers["Content-Disposition"],
+                )
+                self.upstream.fetch.assert_awaited_once_with(
+                    self.subscription["url"],
+                    auth_username="alice",
+                    auth_password="secret",
+                    follow_redirects=False,
+                    connect_timeout=3,
+                    request_timeout=5,
+                )
+        self.client_factory.assert_called_with(
+            force_instance=True, max_body_size=1024 * 1024
+        )
+
+    def test_tries_backup_after_http_timeout_connection_or_json_failure(self):
+        config = {"from": "backup"}
+        for failure in (
+            HTTPClientError(403),
+            HTTPClientError(302),
+            HTTPClientError(599),
+            OSError("connection failed"),
+            Mock(body=b"not JSON"),
+        ):
+            with self.subTest(failure=failure):
+                self.upstream.fetch.reset_mock()
+                self.upstream.fetch.side_effect = [
+                    failure,
+                    Mock(body=json.dumps(config).encode()),
+                ]
+                response = self.export()
+                self.assertEqual(config, json.loads(response.body))
+                self.assertEqual(
+                    [self.subscription["url"], *self.subscription["fallbackUrls"]],
+                    [call.args[0] for call in self.upstream.fetch.await_args_list],
+                )
+
+    def test_local_generator_without_sources_or_when_all_sources_fail(self):
+        for subscription in (None, self.subscription):
+            with self.subTest(subscription=subscription):
+                self._app.settings["mega_proxy_subscription"] = subscription
+                self.upstream.fetch.reset_mock()
+                response = self.export("?port=8443")
+                self.assertEqual(200, response.code)
+                self.assertEqual(
+                    build_mega_proxy_config(
+                        self._app.settings["hosts_data"],
+                        username="alice",
+                        password="secret",
+                        default_port="8443",
+                        subscription=subscription,
+                    ),
+                    json.loads(response.body),
+                )
+                self.assertEqual(
+                    2 if subscription else 0, self.upstream.fetch.await_count
+                )
 
 
 if __name__ == "__main__":

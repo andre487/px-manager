@@ -24,6 +24,7 @@ import dns.resolver
 import dns.rdatatype
 import icmplib
 import tornado.escape
+import tornado.httpclient
 import tornado.log
 import tornado.httpserver
 import tornado.ioloop
@@ -1144,16 +1145,46 @@ class MegaProxyGenerateHandler(BaseHandler):
         if self.authenticated_credentials is None:
             return
 
-    def get(self):
+    async def get(self):
         username, password = self.authenticated_credentials  # type: ignore
         default_port = self.get_query_argument("port", "443")
-        config = build_mega_proxy_config(
-            self.hosts_data,
-            username=username,
-            password=password,
-            default_port=default_port,
-            subscription=self.application.settings.get("mega_proxy_subscription"),
+        subscription = self.application.settings.get("mega_proxy_subscription")
+        urls = (
+            [subscription["url"], *subscription.get("fallbackUrls", [])]
+            if subscription else []
         )
+        client = tornado.httpclient.AsyncHTTPClient(
+            force_instance=True, max_body_size=1024 * 1024
+        )
+        try:
+            for url in urls:
+                try:
+                    if urlparse(url).scheme != "https":
+                        continue
+                    response = await client.fetch(
+                        url,
+                        auth_username=username,
+                        auth_password=password,
+                        follow_redirects=False,
+                        connect_timeout=3,
+                        request_timeout=5,
+                    )
+                    config = json.loads(response.body)
+                    break
+                except (
+                    tornado.httpclient.HTTPClientError, OSError, ValueError, RecursionError
+                ):
+                    continue
+            else:
+                config = build_mega_proxy_config(
+                    self.hosts_data,
+                    username=username,
+                    password=password,
+                    default_port=default_port,
+                    subscription=subscription,
+                )
+        finally:
+            client.close()
 
         self.set_header("Content-Type", "application/json; charset=utf-8")
         self.set_header(

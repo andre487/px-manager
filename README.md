@@ -3,7 +3,14 @@ Proxy info manager
 
 ## MegaProxy export
 
-`/api/generate/mega-proxy` returns a `net.megaproxy487.config` version 8 document. Profile IDs are
+`/api/generate/mega-proxy` first requests a MegaProxy v8 configuration from the configured
+subscription URLs in order, using the logged-in user's proxy credentials as HTTPS Basic Auth.
+The first JSON response is returned as formatted JSON without validating its configuration.
+Requests verify TLS certificates,
+reject redirects, time out after five seconds per source, and limit responses to 1 MiB.
+If every source fails or returns unparsable JSON, the existing local generator is used.
+
+Locally generated profile IDs are
 deterministic and do not include the endpoint or credentials, so importing a newly generated file
 updates existing profiles and adds new servers without duplicating them. Set a unique, immutable
 `profile_id` on each `hosts.json` entry; its title is used as a compatibility fallback. Profiles
