@@ -1152,6 +1152,7 @@ class MegaProxyGenerateHandler(BaseHandler):
             username=username,
             password=password,
             default_port=default_port,
+            subscription=self.application.settings.get("mega_proxy_subscription"),
         )
 
         self.set_header("Content-Type", "application/json; charset=utf-8")
@@ -2174,6 +2175,7 @@ def build_mega_proxy_config(
     username: str,
     password: str,
     default_port: str,
+    subscription: dict | None = None,
 ) -> dict:
     profiles = [
         build_mega_proxy_profile(
@@ -2221,6 +2223,11 @@ def build_mega_proxy_config(
             "bypassLocalNetworks": True,
         },
         "profiles": profiles,
+        **(
+            {"subscription": {**subscription, "username": username, "password": password}}
+            if subscription
+            else {}
+        ),
     }
 
 
@@ -2850,6 +2857,10 @@ def make_app(
     cookie_secret: str,
 ) -> tornado.web.Application:
     hosts_data = json.loads((config_dir / "hosts.json").read_text())
+    subscription_path = config_dir / "subscription.json"
+    mega_proxy_subscription = (
+        json.loads(subscription_path.read_text()) if subscription_path.exists() else None
+    )
     admin_user = read_optional_text(config_dir / "admin.txt") or None
 
     session_store = SessionStore(SESSION_TTL_SECONDS)
@@ -2893,6 +2904,7 @@ def make_app(
         admin_user=admin_user,
         password_store=PasswordStore.from_file(config_dir / "passwd.json"),
         hosts_data=hosts_data,
+        mega_proxy_subscription=mega_proxy_subscription,
         session_store=session_store,
         ban_store=ban_store,
         cors_allowed_origins=set(),

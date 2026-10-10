@@ -69,6 +69,38 @@
           - px_manager_hosts_data | length > 0
           - px_manager_hosts_data | selectattr('selected') | list | length == 1
 
+    - name: Initialize configuration subscription sources
+      ansible.builtin.set_fact:
+        px_manager_config_urls: []
+        px_manager_config_interval: 60
+
+    - name: Add enabled configuration APIs from MegaProxy inventory
+      no_log: true
+      ansible.builtin.set_fact:
+        px_manager_config_urls: "{{ px_manager_config_urls + [config_url] }}"
+        px_manager_config_interval: "{{ item.value.services.config_api.interval_minutes | default(60) if px_manager_config_urls | length == 0 else px_manager_config_interval }}"
+      vars:
+        config_api: "{{ item.value.services.config_api }}"
+        config_host: "{{ '[' ~ config_api.endpoint ~ ']' if ':' in config_api.endpoint else config_api.endpoint | lower }}"
+        config_port: "{{ '' if config_api.port | default(443) | int == 443 else ':' ~ (config_api.port | string) }}"
+        config_url: "{{ 'https://' ~ config_host ~ config_port ~ (config_api.path | default('/api/config')) }}"
+      loop: "{{ hosts | dict2items }}"
+      when:
+        - item.value.services.config_api is defined
+        - item.value.services.config_api.enabled | default(false)
+
+    - name: Assert configuration subscription limits
+      ansible.builtin.assert:
+        that:
+          - px_manager_config_urls | length <= 8
+          - px_manager_config_urls | unique | length == px_manager_config_urls | length
+          - px_manager_config_interval | int >= 1
+          - px_manager_config_interval | int <= 10080
+
+    - name: Build configuration subscription
+      ansible.builtin.set_fact:
+        px_manager_subscription: "{{ {'url': px_manager_config_urls[0], 'fallbackUrls': px_manager_config_urls[1:], 'intervalMinutes': px_manager_config_interval | int, 'enabled': true} if px_manager_config_urls | length > 0 else {} }}"
+
     - name: Install build prerequisites
       ansible.builtin.package:
         name:
@@ -259,6 +291,15 @@
       ansible.builtin.copy:
         content: "{{ px_manager_hosts_data | to_nice_json }}\n"
         dest: "{{ px_manager_config_dir }}/hosts.json"
+        owner: root
+        group: "{{ px_manager_group }}"
+        mode: "0640"
+      notify: Restart px-manager
+
+    - name: Install subscription.json
+      ansible.builtin.copy:
+        content: "{{ px_manager_subscription | to_nice_json }}\n"
+        dest: "{{ px_manager_config_dir }}/subscription.json"
         owner: root
         group: "{{ px_manager_group }}"
         mode: "0640"

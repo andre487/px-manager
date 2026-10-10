@@ -1,10 +1,18 @@
 import json
 import pathlib
+import tempfile
 import unittest
 
 from jsonschema import Draft202012Validator
+from tornado.testing import AsyncHTTPTestCase
+from tornado.web import create_signed_value
 
-from main import build_mega_proxy_config, build_mega_proxy_profile
+from main import (
+    SESSION_COOKIE_NAME,
+    build_mega_proxy_config,
+    build_mega_proxy_profile,
+    make_app,
+)
 
 
 class MegaProxyExportTest(unittest.TestCase):
@@ -23,6 +31,7 @@ class MegaProxyExportTest(unittest.TestCase):
         self.assertEqual("AUTO", config["ssh"]["authMode"])
         self.assertEqual("DISABLED", config["failover"]["mode"])
         self.assertTrue(config["routing"]["routeAllApps"])
+        self.assertNotIn("subscription", config)
 
     def test_generated_json_matches_official_schema(self):
         schema = json.loads(
@@ -57,7 +66,16 @@ class MegaProxyExportTest(unittest.TestCase):
         ):
             with self.subTest(hosts=hosts):
                 config = build_mega_proxy_config(
-                    hosts, username="alice", password="secret", default_port="443"
+                    hosts,
+                    username="alice",
+                    password="secret",
+                    default_port="443",
+                    subscription={
+                        "url": "https://configs.example/api/config",
+                        "fallbackUrls": ["https://backup.example:8443/api/config"],
+                        "intervalMinutes": 60,
+                        "enabled": True,
+                    },
                 )
                 validator.validate(json.loads(json.dumps(config, ensure_ascii=False)))
 
@@ -134,6 +152,50 @@ class MegaProxyExportTest(unittest.TestCase):
         )
 
         self.assertEqual("TR", profile["countryCode"])
+
+
+class MegaProxySubscriptionTest(AsyncHTTPTestCase):
+    def get_app(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = pathlib.Path(directory.name)
+        (root / "hosts.json").write_text('[{"host": "proxy.example"}]')
+        (root / "passwd.json").write_text("{}")
+        self.subscription = {
+            "url": "https://configs.example/api/config",
+            "fallbackUrls": ["https://backup.example:8443/api/config"],
+            "intervalMinutes": 120,
+            "enabled": True,
+        }
+        (root / "subscription.json").write_text(json.dumps(self.subscription))
+        return make_app(root, root, root, root, "test-secret")
+
+    def test_export_uses_inventory_subscription_and_session_credentials(self):
+        session_id = self._app.settings["session_store"].create("alice", "secret")
+        cookie = create_signed_value(
+            "test-secret", SESSION_COOKIE_NAME, session_id
+        ).decode()
+        response = self.fetch(
+            "/api/generate/mega-proxy",
+            headers={"Cookie": f"{SESSION_COOKIE_NAME}={cookie}"},
+        )
+        self.assertEqual(200, response.code)
+        config = json.loads(response.body)
+        self.assertEqual(
+            {**self.subscription, "username": "alice", "password": "secret"},
+            config["subscription"],
+        )
+        self.assertEqual(
+            config["profiles"][0]["proxy"]["username"],
+            config["subscription"]["username"],
+        )
+        self.assertEqual(
+            config["profiles"][0]["proxy"]["password"],
+            config["subscription"]["password"],
+        )
+        self.assertEqual(
+            self.subscription, self._app.settings["mega_proxy_subscription"]
+        )
 
 
 if __name__ == "__main__":
