@@ -1,6 +1,29 @@
 # px-manager
 Proxy info manager
 
+## Client setup
+
+Prefer configuration subscriptions: use [BrowserMegaProxy](https://github.com/andre487/BrowserMegaProxy)
+for Chrome and Firefox, and [AndroidMegaProxy](https://github.com/andre487/AndroidMegaProxy)
+for Android. The authenticated `/doc` page contains setup instructions; importing a
+MegaProxy JSON file is the fallback.
+
+The current `~/MyProjects/ansible-inventory/mega-proxy-inventory.yml` configures:
+
+- Primary URL: `https://pxc-ru.jethelix.ru/api/config`.
+- Fallback URL: `https://pxc-kz.jethelix.ru/api/config`.
+- HTTPS Basic Auth: the user's PX Manager login and password (`users.https`).
+- Automatic updates every 60 minutes.
+
+These feeds are deployed by `~/MyProjects/MegaProxyServer/`; see its
+[configuration API guide](https://github.com/andre487/MegaProxyServer/blob/main/docs/ru/config-api.md).
+Endpoints, ports, paths and intervals come from `hosts.*.services.config_api`.
+Client preferences come from `settings.client_config` and per-user `client_config`;
+`client_config.subscription` may override `intervalMinutes` and `enabled`, while the
+server manages URLs and credentials. Apply inventory changes to every affected API host
+(and affected proxy hosts when changing users or services). Deploy PX Manager again to
+refresh its `subscription.json`. Keep the URLs in `/doc` in sync when endpoints change.
+
 ## MegaProxy export
 
 `/api/generate/mega-proxy` first requests a MegaProxy v8 configuration from the configured
