@@ -37,12 +37,15 @@
               {% end %}
             </h2>
             <p>{{ escape(item["host"]) }}</p>
+            <button type="button" class="reputation-button" data-speed data-speed-http3="{{ 'true' if item.get('http3_enabled') else 'false' }}" {% if item.get("proxy_kind") == "mtproxy" %}disabled title="MTProxy поддерживает только трафик Telegram"{% end %}>Замер скорости</button>
           </div>
           <div class="health-checks" aria-label="Статусы проверки">
+            {% for resolver, label in (("system", "System"), ("cloudflare", "Cloudflare")) %}
             <div class="health-check health-check-dns">
-              <span class="health-label">DNS</span>
-              <span class="health-status status-loading" data-check="dns">Проверяется</span>
+              <span class="health-label">DNS {{ label }}</span>
+              <span class="health-status status-loading" data-check="dns-{{ resolver }}">Проверяется</span>
             </div>
+            {% end %}
             <div class="health-check health-check-request">
               <span class="health-label">Ping</span>
               <span class="health-status status-loading" data-check="ping">Проверяется</span>
@@ -53,9 +56,22 @@
             </div>
             <div class="health-check">
               <span class="health-label">Request</span>
-              <span class="health-status status-loading" data-check="head">Проверяется</span>
+              <div class="health-request-result">
+                <span class="health-status status-loading" data-check="head">Проверяется</span>
+                <button type="button" class="reputation-button" data-reputation hidden>Репутация IP</button>
+              </div>
             </div>
             {% if item.get("source") != "tg-proxies" %}
+            {% for protocol in ("h2", "h3") %}
+            <div class="health-check">
+              <span class="health-label">HTTP/{{ protocol[1] }}</span>
+              <span class="health-status status-loading" data-check="{{ protocol }}">Проверяется</span>
+            </div>
+            {% end %}
+            <div class="health-check">
+              <span class="health-label">Сертификат</span>
+              <span class="health-status status-loading" data-check="certificate">Проверяется</span>
+            </div>
             <div class="health-check">
               <span class="health-label">Страна выхода</span>
               <span class="health-status status-loading" data-check="country">Проверяется</span>
@@ -66,8 +82,48 @@
       {% end %}
     </section>
 
+    <dialog class="speed-dialog reputation-dialog reputation-report" aria-labelledby="speed-title">
+      <form method="dialog"><button autofocus>Закрыть</button></form>
+      <h2 id="speed-title">Скорость прокси <span data-speed-host></span></h2>
+      <p>Маршрут: сервер PX Manager → прокси → Cloudflare. Задержка — медиана трёх запросов до заголовков ответа.</p>
+      <form data-speed-form class="lookup-form">
+        {% module xsrf_form_html() %}
+        <label for="speed-protocol">HTTP-протокол до Cloudflare</label>
+        <select id="speed-protocol" name="protocol">
+          <option value="h2">HTTP/2</option>
+          <option value="h3">HTTP/3 · MASQUE</option>
+          <option value="h1">HTTP/1.1</option>
+        </select>
+        <label for="speed-size">Объём в каждую сторону</label>
+        <select id="speed-size" name="megabytes">
+          {% for size in speed_sizes %}<option value="{{ size }}">{{ size }} МБ</option>{% end %}
+        </select>
+        <p>Загрузка и отправка расходуют выбранный объём каждая, плюс служебный трафик. Протокол не подменяется при ошибке.</p>
+        <button type="submit" class="reputation-button" data-speed-start>Начать</button>
+        <button type="button" class="reputation-button" data-speed-stop disabled>Остановить</button>
+      </form>
+      <p data-speed-status role="status" aria-live="polite">Готов к замеру</p>
+      <dl>
+        <dt>Выходной IP</dt><dd data-speed-value="exit_ip">—</dd>
+        <dt>Страна выхода</dt><dd class="health-status" data-speed-value="country_code" data-check="country">—</dd>
+        <dt>Протокол</dt><dd data-speed-value="protocol">—</dd>
+        <dt>Задержка</dt><dd data-speed-value="latency_ms">—</dd>
+        <dt>Загрузка</dt><dd data-speed-value="download_mbps">—</dd>
+        <dt>Отправка</dt><dd data-speed-value="upload_mbps">—</dd>
+      </dl>
+    </dialog>
+
+    <dialog class="ip-reputation-dialog reputation-dialog reputation-report" aria-labelledby="reputation-title">
+      <form method="dialog"><button autofocus>Закрыть</button></form>
+      <h2 id="reputation-title">Репутация IP <span data-reputation-ip></span></h2>
+      <p>Оценки сервисов независимы; VPN сам по себе не означает плохую репутацию. Успешные результаты кешируются на сутки.</p>
+      <div data-reputation-results aria-live="polite"></div>
+      <div class="nav"><a href="/health">К проверке прокси</a></div>
+    </dialog>
+
     <div class="nav">
       <a href="/">На главную</a>
+      <a href="/lookup">Проверка IP или домена</a>
     </div>
   </main>
 </body>

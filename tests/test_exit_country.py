@@ -1,12 +1,12 @@
-import asyncio
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 from main import (
+    COUNTRY_ENDPOINTS,
     HEALTH_RESULT_CACHE,
+    IP_ECHO_ENDPOINTS,
     extract_ip_echo,
     parse_country_response,
-    read_http_response_body,
     run_https_proxy_country_check,
     run_https_proxy_request_check,
     run_https_proxy_request_check_endpoint,
@@ -41,12 +41,27 @@ class ExitCountryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(5, request.await_count)
 
     def test_parsers(self):
-        for value in (' nl\n', '{"country":"nl"}'):
+        for value in (
+            ' nl\n',
+            '{"country":"nl"}',
+            'ip=192.0.2.1\nloc=NL\ntls=TLSv1.3\n',
+        ):
             self.assertEqual('NL', parse_country_response(value))
-        for value in ('NLD', '<html>NL</html>', '{"country":null}', '{}', '12'):
+        for value in (
+            'NLD',
+            '<html>NL</html>',
+            '{"country":null}',
+            '{}',
+            '12',
+            'ip=192.0.2.1',
+            'loc=123',
+            'loc=',
+        ):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 parse_country_response(value)
         self.assertEqual('2001:db8::1', extract_ip_echo('2001:db8::1\n'))
+        self.assertEqual('192.0.2.1', extract_ip_echo('fl=123\nip=192.0.2.1\nloc=NL\n'))
+        self.assertEqual('', extract_ip_echo('ip=invalid\nloc=NL'))
         self.assertEqual('', extract_ip_echo('error 192.0.2.1'))
         self.assertEqual('', extract_ip_echo('999.2.3.4'))
 
@@ -56,6 +71,7 @@ class ExitCountryTest(unittest.IsolatedAsyncioTestCase):
             'main.run_https_proxy_request_check_endpoint', new_callable=AsyncMock
         ) as request:
             request.side_effect = [
+                {'ok': False, 'error': 'Timeout'},
                 {'ok': False, 'error': 'HTTP 429'},
                 {'ok': False, 'error': 'Invalid response'},
                 {'ok': True, 'country_code': 'NL'},
@@ -63,9 +79,30 @@ class ExitCountryTest(unittest.IsolatedAsyncioTestCase):
             result = await run_https_proxy_country_check(host, 'user', 'password')
         self.assertEqual('NL', result['country_code'])
         self.assertEqual('api.country.is', result['country_provider'])
+        self.assertEqual(
+            list(COUNTRY_ENDPOINTS), [call.args[3:] for call in request.call_args_list]
+        )
         for call in request.call_args_list:
             self.assertEqual((host, 'user', 'password'), call.args[:3])
             self.assertEqual('country', call.kwargs['response_kind'])
+
+    async def test_cloudflare_country_stops_fallbacks(self):
+        with patch(
+            'main.run_https_proxy_request_check_endpoint', new_callable=AsyncMock
+        ) as request:
+            request.return_value = {'ok': True, 'country_code': 'NL'}
+            result = await run_https_proxy_country_check({}, 'u', 'p')
+        self.assertEqual('speed.cloudflare.com', result['country_provider'])
+        self.assertEqual('NL', result['country_code'])
+        request.assert_awaited_once_with(
+            {},
+            'u',
+            'p',
+            'speed.cloudflare.com',
+            443,
+            '/cdn-cgi/trace',
+            response_kind='country',
+        )
 
     async def test_country_failure_does_not_fail_working_proxy(self):
         with patch(
@@ -73,7 +110,7 @@ class ExitCountryTest(unittest.IsolatedAsyncioTestCase):
         ) as request:
             request.side_effect = [
                 {'ok': True, 'exit_ip': '192.0.2.1'},
-                *[{'ok': False, 'error': 'Unavailable'} for _ in range(3)],
+                *[{'ok': False, 'error': 'Unavailable'} for _ in COUNTRY_ENDPOINTS],
             ]
             result = await run_https_proxy_request_check(
                 {'host': 'proxy.example'}, 'u', 'p'
@@ -92,57 +129,72 @@ class ExitCountryTest(unittest.IsolatedAsyncioTestCase):
                 {'host': 'proxy.example'}, 'u', 'p'
             )
         self.assertFalse(result['ok'])
-        self.assertEqual(3, request.await_count)
+        self.assertEqual(len(IP_ECHO_ENDPOINTS), request.await_count)
 
-    async def test_http_body_framing(self):
-        for headers, body in (
-            ({'content-length': '3'}, b'NL\n'),
-            ({}, b'NL\n'),
-            (
-                {'transfer-encoding': 'chunked'},
-                b'1\r\nN\r\n2;ext=1\r\nL\n\r\n0\r\n\r\n',
+    async def test_exit_preserves_transport_metadata(self):
+        metadata = {
+            'proxy_http_version': 'HTTP/3',
+            'proxy_tls_version': 'TLSv1.3',
+            'proxy_certificate': {'subject': 'CN=proxy.example'},
+        }
+        with patch(
+            'main.proxy_request',
+            new=AsyncMock(
+                return_value=(
+                    200,
+                    {},
+                    '192.0.2.1',
+                    metadata,
+                )
             ),
-        ):
-            reader = asyncio.StreamReader()
-            reader.feed_data(body)
-            reader.feed_eof()
-            self.assertEqual('NL', await read_http_response_body(reader, headers))
-
-    async def test_body_size_limit(self):
-        reader = asyncio.StreamReader()
-        with self.assertRaises(ValueError):
-            await read_http_response_body(reader, {'content-length': '100000000'})
-
-    async def test_country_request_uses_authenticated_connect_and_target_tls(self):
-        reader = asyncio.StreamReader()
-        reader.feed_data(
-            b'HTTP/1.1 200 OK\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nNL'
-        )
-        writer = Mock(drain=AsyncMock(), wait_closed=AsyncMock())
-        loop = asyncio.get_running_loop()
-        with (
-            patch(
-                'main.asyncio.open_connection',
-                new=AsyncMock(return_value=(reader, writer)),
-            ) as connect,
-            patch.object(loop, 'start_tls', new_callable=AsyncMock) as tls,
-        ):
+        ) as request:
             result = await run_https_proxy_request_check_endpoint(
-                {'host': 'proxy.example', 'port': 8443},
+                {'host': 'proxy.example'},
                 'u',
                 'p',
-                'ifconfig.co',
+                'api.ipify.org',
                 443,
-                '/country-iso',
-                response_kind='country',
+                '/',
             )
         self.assertTrue(result['ok'])
-        self.assertEqual('NL', result['country_code'])
-        self.assertEqual(('proxy.example', 8443), connect.call_args.args)
-        self.assertEqual('ifconfig.co', tls.call_args.kwargs['server_hostname'])
-        sent = [call.args[0] for call in writer.write.call_args_list]
-        self.assertIn(b'CONNECT ifconfig.co:443', sent[0])
-        self.assertIn(b'Proxy-Authorization: Basic dTpw', sent[0])
-        self.assertNotIn(b'Proxy-Authorization', sent[1])
-        self.assertIn(b'GET /country-iso', sent[1])
-        writer.close.assert_called_once()
+        self.assertEqual('192.0.2.1', result['exit_ip'])
+        for key, value in metadata.items():
+            self.assertEqual(value, result[key])
+        request.assert_awaited_once_with(
+            {'host': 'proxy.example'}, 'u', 'p', 'api.ipify.org', 443, '/', method='GET'
+        )
+
+    async def test_cloudflare_exit_first_and_fallback_only_on_failure(self):
+        for fail_cloudflare in (False, True):
+            success = {'ok': True, 'exit_ip': '192.0.2.1'}
+            with (
+                self.subTest(fallback=fail_cloudflare),
+                patch(
+                    'main.run_https_proxy_request_check_endpoint',
+                    new=AsyncMock(
+                        side_effect=(
+                            [{'ok': False, 'error': 'Timeout'}]
+                            if fail_cloudflare
+                            else []
+                        )
+                        + [success]
+                    ),
+                ) as request,
+                patch(
+                    'main.run_https_proxy_country_check',
+                    new=AsyncMock(return_value={'country_code': 'NL'}),
+                ),
+            ):
+                result = await run_https_proxy_request_check(
+                    {'host': 'proxy.example'}, 'u', 'p'
+                )
+            self.assertTrue(result['ok'])
+            self.assertEqual(
+                ('speed.cloudflare.com', 443, '/cdn-cgi/trace'),
+                request.await_args_list[0].args[3:],
+            )
+            self.assertEqual(2 if fail_cloudflare else 1, request.await_count)
+            if fail_cloudflare:
+                self.assertEqual(
+                    ('ifconfig.me', 443, '/ip'), request.await_args_list[1].args[3:]
+                )

@@ -19,7 +19,7 @@ class NoIndexTest(AsyncHTTPTestCase):
         for path, status in (
             ("/", 200),
             ("/admin", 302),
-            ("/api", 403),
+            ("/api", 401),
             ("/robots.txt", 200),
             ("/favicon.ico", 200),
             ("/static/common.css", 200),

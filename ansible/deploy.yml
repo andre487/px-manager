@@ -7,12 +7,16 @@
     px_manager_user: px-manager
     px_manager_group: px-manager
     px_manager_home: /srv/px_manager
-    px_manager_bin_dir: /opt/px-manager/bin
     px_manager_config_dir: /etc/px-manager
     px_manager_data_dir: "{{ px_manager_home }}/data"
     px_manager_state_dir: /var/lib/px-manager
     px_manager_log_dir: /var/log/px-manager
-    px_manager_build_dir: /opt/px-manager/src
+    px_manager_source_dir: /opt/px-manager/src
+    px_manager_venv_dir: /opt/px-manager/venv
+    px_manager_uv_environment:
+      UV_PROJECT_ENVIRONMENT: "{{ px_manager_venv_dir }}"
+      UV_PYTHON_INSTALL_DIR: /opt/px-manager/python
+      UV_CACHE_DIR: /opt/px-manager/cache
     px_manager_service_name: px-manager
     px_manager_service_port: 8888
     px_manager_cors_origins: []
@@ -21,16 +25,6 @@
     px_manager_cookie_env: "{{ px_manager_config_dir }}/px-manager.env"
     px_manager_admin_user: andre487
     px_manager_selected_proxy: am_proxy
-    px_manager_source_files:
-      - main.py
-      - mtg_health.py
-      - pyproject.toml
-      - uv.lock
-      - px-manager.spec
-    px_manager_source_dirs:
-      - templates
-      - static
-      - tools
 
   pre_tasks:
     - name: Assert required inventory data
@@ -50,7 +44,7 @@
     - name: Add direct HTTPS hosts from MegaProxy inventory
       no_log: true
       ansible.builtin.set_fact:
-        px_manager_hosts_data: "{{ px_manager_hosts_data + [{'host': item.value.services.https.endpoint, 'port': item.value.services.https.port, 'code': (item.key | regex_replace('^proxy_', '')).split('_')[0] | upper, 'title': item.value.services.https.title | default(item.key | regex_replace('^proxy_|_proxy$', '') | replace('_', ' ') | upper, true), 'probe_resistance_enabled': (item.value.services.https.probe_resistance | default({})).enabled | default(false), 'selected': item.key == px_manager_selected_proxy}] }}"
+        px_manager_hosts_data: "{{ px_manager_hosts_data + [{'host': item.value.services.https.endpoint, 'port': item.value.services.https.port, 'code': (item.key | regex_replace('^proxy_', '')).split('_')[0] | upper, 'title': item.value.services.https.title | default(item.key | regex_replace('^proxy_|_proxy$', '') | replace('_', ' ') | upper, true), 'http3_enabled': item.value.services.https.http3 | default(false), 'probe_resistance_enabled': (item.value.services.https.probe_resistance | default({})).enabled | default(false), 'selected': item.key == px_manager_selected_proxy}] }}"
       loop: "{{ hosts | dict2items }}"
       when:
         - item.value.services.https is defined
@@ -101,12 +95,13 @@
       ansible.builtin.set_fact:
         px_manager_subscription: "{{ {'url': px_manager_config_urls[0], 'fallbackUrls': px_manager_config_urls[1:], 'intervalMinutes': px_manager_config_interval | int, 'enabled': true} if px_manager_config_urls | length > 0 else {} }}"
 
-    - name: Install build prerequisites
+    - name: Install runtime prerequisites
       ansible.builtin.package:
         name:
           - ca-certificates
           - curl
           - python3
+          - rsync
         state: present
 
     - name: Check uv binary
@@ -156,10 +151,6 @@
           owner: "{{ px_manager_user }}"
           group: "{{ px_manager_group }}"
           mode: "0750"
-        - path: "{{ px_manager_bin_dir }}"
-          owner: root
-          group: "{{ px_manager_group }}"
-          mode: "0750"
         - path: "{{ px_manager_config_dir }}"
           owner: root
           group: "{{ px_manager_group }}"
@@ -176,65 +167,36 @@
           owner: "{{ px_manager_user }}"
           group: "{{ px_manager_group }}"
           mode: "0750"
-        - path: "{{ px_manager_build_dir }}"
+        - path: "{{ px_manager_source_dir }}"
           owner: root
           group: root
           mode: "0755"
 
-    - name: Copy source files for Linux build
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../{{ item }}"
-        dest: "{{ px_manager_build_dir }}/{{ item }}"
-        owner: root
-        group: root
-        mode: "0644"
-      loop: "{{ px_manager_source_files }}"
-      register: px_manager_source_files_copy
+    - name: Synchronize project sources
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../"
+        dest: "{{ px_manager_source_dir }}/"
+        delete: true
+        checksum: true
+        owner: false
+        group: false
+        rsync_opts:
+          - "--filter={{ ('merge ' ~ playbook_dir ~ '/rsync-filter') | quote }}"
+          - --delete-excluded
+          - --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r
+      notify: Restart px-manager
 
-    - name: Copy source directories for Linux build
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../{{ item }}"
-        dest: "{{ px_manager_build_dir }}/"
-        owner: root
-        group: root
-        mode: preserve
-      loop: "{{ px_manager_source_dirs }}"
-      register: px_manager_source_dirs_copy
-
-    - name: Copy deploy scripts
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/scripts/"
-        dest: "{{ px_manager_build_dir }}/ansible-scripts/"
-        owner: root
-        group: root
-        mode: "0755"
-      register: px_manager_deploy_scripts_copy
-
-    - name: Check built px-manager binary
-      ansible.builtin.stat:
-        path: "{{ px_manager_build_dir }}/dist/px-manager"
-      register: px_manager_built_binary_stat
-
-    - name: Build px-manager binary
+    - name: Synchronize runtime virtual environment
       ansible.builtin.command:
-        cmd: "{{ px_manager_uv_path }} run --locked pyinstaller --clean px-manager.spec"
-        chdir: "{{ px_manager_build_dir }}"
-      register: px_manager_build
-      changed_when: true
-      when: >
-        px_manager_source_files_copy.changed
-        or px_manager_source_dirs_copy.changed
-        or px_manager_deploy_scripts_copy.changed
-        or not px_manager_built_binary_stat.stat.exists
-
-    - name: Install px-manager binary
-      ansible.builtin.copy:
-        src: "{{ px_manager_build_dir }}/dist/px-manager"
-        dest: "{{ px_manager_bin_dir }}/px-manager"
-        remote_src: true
-        owner: root
-        group: "{{ px_manager_group }}"
-        mode: "0750"
+        argv:
+          - "{{ px_manager_uv_path }}"
+          - sync
+          - --locked
+          - --no-dev
+        chdir: "{{ px_manager_source_dir }}"
+      environment: "{{ px_manager_uv_environment }}"
+      register: px_manager_uv_sync
+      changed_when: "'Installed ' in px_manager_uv_sync.stderr or 'Uninstalled ' in px_manager_uv_sync.stderr or 'Creating virtual environment' in px_manager_uv_sync.stderr"
       notify: Restart px-manager
 
     - name: Check cookie secret environment file
@@ -245,7 +207,7 @@
 
     - name: Create stable cookie secret
       ansible.builtin.command:
-        cmd: python3 {{ px_manager_build_dir }}/ansible-scripts/generate_cookie_env.py
+        cmd: python3 {{ px_manager_source_dir }}/ansible/scripts/generate_cookie_env.py
       register: px_manager_cookie_secret
       changed_when: false
       no_log: true
@@ -265,13 +227,10 @@
     - name: Generate passwd.json from inventory proxy_users
       ansible.builtin.command:
         argv:
-          - "{{ px_manager_uv_path }}"
-          - run
-          - --locked
-          - python
-          - "{{ px_manager_build_dir }}/ansible-scripts/generate_passwd.py"
+          - "{{ px_manager_venv_dir }}/bin/python"
+          - "{{ px_manager_source_dir }}/ansible/scripts/generate_passwd.py"
           - "{{ px_manager_config_dir }}/passwd.json"
-        chdir: "{{ px_manager_build_dir }}"
+        chdir: "{{ px_manager_source_dir }}"
         stdin: "{{ proxy_users | to_json }}"
       register: px_manager_passwd_json
       changed_when: false
@@ -285,6 +244,18 @@
         group: "{{ px_manager_group }}"
         mode: "0640"
       no_log: true
+      notify: Restart px-manager
+
+    - name: Install reputation API keys
+      ansible.builtin.copy:
+        content: "{{ px_manager_reputation_keys | to_nice_json }}\n"
+        dest: "{{ px_manager_config_dir }}/reputation.json"
+        owner: "{{ px_manager_user }}"
+        group: "{{ px_manager_group }}"
+        mode: "0600"
+      when: px_manager_reputation_keys is defined
+      no_log: true
+      diff: false
       notify: Restart px-manager
 
     - name: Install hosts.json
@@ -349,6 +320,23 @@
         enabled: true
         state: started
         daemon_reload: true
+
+    - name: Apply service changes before removing legacy binary
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify service responds
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ px_manager_service_port }}/"
+        status_code: 200
+      register: px_manager_health
+      until: px_manager_health.status == 200
+      retries: 10
+      delay: 2
+
+    - name: Remove legacy binary directory
+      ansible.builtin.file:
+        path: /opt/px-manager/bin
+        state: absent
 
   handlers:
     - name: Reload systemd

@@ -9,7 +9,8 @@ User={{ px_manager_user }}
 Group={{ px_manager_group }}
 WorkingDirectory={{ px_manager_home }}
 EnvironmentFile={{ px_manager_cookie_env }}
-ExecStart={{ px_manager_bin_dir }}/px-manager --data-dir {{ px_manager_data_dir }} --config-dir {{ px_manager_config_dir }} --log-dir {{ px_manager_log_dir }} --state-dir {{ px_manager_state_dir }} --host 127.0.0.1 --port {{ px_manager_service_port }}{% for origin in px_manager_cors_origins %} --cors-origin {{ origin | quote }}{% endfor %}
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart={{ px_manager_venv_dir }}/bin/python {{ px_manager_source_dir }}/main.py --data-dir {{ px_manager_data_dir }} --config-dir {{ px_manager_config_dir }} --log-dir {{ px_manager_log_dir }} --state-dir {{ px_manager_state_dir }} --host 127.0.0.1 --port {{ px_manager_service_port }}{% for origin in px_manager_cors_origins %} --cors-origin {{ origin | quote }}{% endfor %}
 
 Restart=on-failure
 RestartSec=5

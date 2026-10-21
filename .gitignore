@@ -31,7 +31,6 @@ MANIFEST
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
-!px-manager.spec
 
 # Installer logs
 pip-log.txt
@@ -219,4 +218,5 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Misc
+reputation.json
 .vscode

@@ -1,7 +1,7 @@
-import html
-import hashlib
 import asyncio
 import base64
+import hashlib
+import html
 import ipaddress
 import json
 import logging
@@ -10,25 +10,28 @@ import re
 import secrets
 import socket
 import ssl
-import sys
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
 from logging.handlers import RotatingFileHandler
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse, urlsplit
 
 import click
 import dns.asyncresolver
 import dns.exception
-import dns.resolver
 import dns.rdatatype
+import dns.resolver
 import icmplib
 import tornado.escape
 import tornado.httpclient
-import tornado.log
 import tornado.httpserver
 import tornado.ioloop
+import tornado.iostream
+import tornado.log
 import tornado.web
+from argon2 import PasswordHasher
+from argon2.exceptions import Argon2Error, VerificationError
 from telethon.network.connection.tcpmtproxy import (
     ConnectionTcpMTProxyAbridged,
     ConnectionTcpMTProxyIntermediate,
@@ -37,15 +40,22 @@ from telethon.network.connection.tcpmtproxy import (
 from telethon.network.mtprotoplainsender import MTProtoPlainSender
 from telethon.tl.functions import ReqPqMultiRequest
 from user_agents import parse as parse_user_agent
-from argon2 import PasswordHasher
-from argon2.exceptions import Argon2Error, VerificationError
+
 from mtg_health import MTGConnection
+from proxy_speed import SIZES_MB, run_speed_test
+from proxy_transport import proxy_request
+from reputation import LOOKUP_MAX_IPS, get_reputation, parse_lookup_target
 
 SESSION_TTL_SECONDS = 30 * 60
 SESSION_CLEANUP_INTERVAL_MS = 60 * 1000
 SESSION_COOKIE_NAME = "session"
 TLS_FINGERPRINT_TTL_SECONDS = 6 * 60 * 60
 HEALTH_CACHE_TTL_SECONDS = 25
+DNS_TIMEOUT_SECONDS = 60
+DNS_CACHE_TTL_SECONDS = 60 * 60
+DNS_CACHE_MAX_SIZE = 1024
+DNS_RESULT_CACHE = OrderedDict()
+DNS_RESOLVERS = {"system": None, "cloudflare": "1.1.1.1"}
 COUNTRY_CACHE_TTL_SECONDS = 5 * 60
 LOG_MAX_BYTES = 100 * 1024 * 1024
 LOG_BACKUP_COUNT = 1
@@ -74,11 +84,13 @@ TELEGRAM_MTPROXY_CONNECTIONS = (
     ("randomized_intermediate", ConnectionTcpMTProxyRandomizedIntermediate),
 )
 IP_ECHO_ENDPOINTS = (
+    ("speed.cloudflare.com", 443, "/cdn-cgi/trace"),
     ("ifconfig.me", 443, "/ip"),
     ("api.ipify.org", 443, "/"),
     ("icanhazip.com", 443, "/"),
 )
 COUNTRY_ENDPOINTS = (
+    ("speed.cloudflare.com", 443, "/cdn-cgi/trace"),
     ("ifconfig.co", 443, "/country-iso"),
     ("ipapi.co", 443, "/country_code/"),
     ("api.country.is", 443, "/"),
@@ -109,8 +121,7 @@ cur_dir = pathlib.Path.cwd()
 
 
 def resource_path(*parts: str) -> pathlib.Path:
-    base_path = pathlib.Path(getattr(sys, "_MEIPASS", pathlib.Path(__file__).parent))
-    return base_path.joinpath(*parts)
+    return pathlib.Path(__file__).parent.joinpath(*parts)
 
 
 class PasswordStore:
@@ -445,6 +456,29 @@ class PersistentBanStore(BanStore):
             self._save()
 
 
+def safe_retpath(value: str) -> str:
+    if len(value) > 2048:
+        return "/"
+    original = value
+    while True:
+        if (
+            not value.startswith("/")
+            or value.startswith("//")
+            or any(ord(char) < 32 or ord(char) == 127 or char == "\\" for char in value)
+        ):
+            return "/"
+        try:
+            parsed = urlsplit(value)
+            if parsed.scheme or parsed.netloc:
+                return "/"
+            decoded = unquote(value, errors="strict")
+        except ValueError, UnicodeDecodeError:
+            return "/"
+        if decoded == value:
+            return original
+        value = decoded
+
+
 class BaseHandler(tornado.web.RequestHandler):
     def set_default_headers(self):
         self.set_header("X-Content-Type-Options", "nosniff")
@@ -582,9 +616,12 @@ class BaseHandler(tornado.web.RequestHandler):
             self.client_ip,
             get_access_log_client(self),
         )
-        self.set_status(403)
-        self.finish({"error": "forbidden"})
+        self.set_status(401)
+        self.finish({"error": "authentication_required"})
         return None
+
+    def redirect_to_login(self):
+        self.redirect("/?" + urlencode({"retpath": safe_retpath(self.request.uri)}))
 
     def get_allowed_health_host_for_check(self, check_name: str) -> dict | None:
         host = self.get_query_argument("host", "")
@@ -614,6 +651,7 @@ class IndexHandler(BaseHandler):
                 message_html="",
                 tg_proxies=[],
                 is_admin=False,
+                retpath=safe_retpath(self.get_argument("retpath", "/")),
             )
             return
 
@@ -625,6 +663,7 @@ class IndexHandler(BaseHandler):
             message_html=compile_message_html(message),
             tg_proxies=read_tg_proxies(self.data_dir),
             is_admin=self.is_admin,
+            retpath=safe_retpath(self.get_argument("retpath", "/")),
         )
 
     def post(self):
@@ -641,6 +680,7 @@ class IndexHandler(BaseHandler):
                 message_html="",
                 tg_proxies=[],
                 is_admin=False,
+                retpath=safe_retpath(self.get_argument("retpath", "/")),
             )
             return
 
@@ -666,6 +706,7 @@ class IndexHandler(BaseHandler):
                 message_html="",
                 tg_proxies=[],
                 is_admin=False,
+                retpath=safe_retpath(self.get_argument("retpath", "/")),
             )
             return
 
@@ -688,7 +729,7 @@ class IndexHandler(BaseHandler):
             httponly=True,
             samesite="Strict",
         )
-        self.redirect("/")
+        self.redirect(safe_retpath(self.get_body_argument("retpath", "/")))
 
 
 class LogoutHandler(BaseHandler):
@@ -729,7 +770,7 @@ class ErrorPageHandler(BaseHandler):
 class AdminBaseHandler(BaseHandler):
     def prepare(self):
         if self.current_user is None:
-            self.redirect("/")
+            self.redirect_to_login()
             raise tornado.web.Finish()
 
         if not self.is_admin:
@@ -824,7 +865,7 @@ class AdminLogHandler(AdminBaseHandler):
 class DocHandler(BaseHandler):
     def prepare(self):
         if self.current_user is None:
-            self.redirect("/")
+            self.redirect_to_login()
             raise tornado.web.Finish()
 
     def get(self):
@@ -834,11 +875,59 @@ class DocHandler(BaseHandler):
 class HealthPageHandler(BaseHandler):
     def prepare(self):
         if self.current_user is None:
-            self.redirect("/")
+            self.redirect_to_login()
             raise tornado.web.Finish()
 
     def get(self):
-        self.render("health.html", hosts_data=self.health_hosts_data)
+        self.render("health.html", hosts_data=self.health_hosts_data, speed_sizes=SIZES_MB)
+
+
+class LookupPageHandler(DocHandler):
+
+    async def get(self):
+        target = self.get_query_argument("target", "")
+        dns_result = None
+        addresses = []
+        reports = []
+        error = None
+        if target:
+            try:
+                normalized, is_ip = parse_lookup_target(target)
+            except ValueError as exception:
+                error = str(exception)
+                self.set_status(400)
+            else:
+                if is_ip:
+                    addresses = [normalized]
+                else:
+                    dns_result = await resolve_host_addresses(normalized)
+                    addresses = sorted(
+                        {
+                            ip
+                            for name in ("system", "cloudflare")
+                            for ip in dns_result[name]["addresses"]
+                        }
+                    )
+                    if not addresses:
+                        error = "DNS не вернул IP-адресов"
+                # ponytail: cap per-domain API spend; pagination for larger result sets.
+                reports = await asyncio.gather(
+                    *(
+                        get_reputation(ip, self.settings["reputation_keys"])
+                        for ip in addresses[:LOOKUP_MAX_IPS]
+                    )
+                )
+        self.set_header("Cache-Control", "no-store")
+        self.render(
+            "lookup.html",
+            target=target,
+            dns_result=dns_result,
+            addresses=addresses,
+            reports=list(zip(addresses, reports)),
+            error=error,
+            lookup_max_ips=LOOKUP_MAX_IPS,
+            format_timestamp=format_timestamp,
+        )
 
 
 class ApiHandler(BaseHandler):
@@ -921,27 +1010,26 @@ class HealthDnsHandler(BaseHandler):
             return
 
         host = host_data["host"]
-        cached_result = get_cached_health_result("dns", host)
-        if cached_result is not None:
-            self.write(cached_result)
+        resolver = self.get_query_argument("resolver", "system")
+        if resolver not in DNS_RESOLVERS:
+            self.set_status(400)
+            self.finish({"error": "Неизвестный DNS-резолвер"})
             return
-
-        result: dict[str, object] = {
-            "ok": False,
-            "host": host,
-            "status": "error",
-            "addresses": [],
-            "error": None,
-        }
-
         try:
-            dns_result = await resolve_host_addresses(host)
-            result.update(dns_result)
+            result = await resolve_host_with_dns(host, resolver)
         except Exception as error:
-            result["error"] = str(error) or error.__class__.__name__
-
-        set_cached_health_result("dns", host, result)
-        self.write(result)
+            result = build_dns_result(
+                False, [], format_dns_error(error, host, resolver)
+            )
+        self.set_header("Cache-Control", "no-store")
+        self.write(
+            {
+                **result,
+                "host": host,
+                "resolver": resolver,
+                "status": "resolved" if result["ok"] else "error",
+            }
+        )
 
     def get_allowed_health_host(self) -> dict | None:
         return self.get_allowed_health_host_for_check("dns")
@@ -1001,6 +1089,183 @@ class HealthHeadHandler(BaseHandler):
 
     def get_allowed_health_host(self) -> dict | None:
         return self.get_allowed_health_host_for_check("head")
+
+
+class HealthProtocolHandler(BaseHandler):
+    async def get(self):
+        credentials = self.require_authenticated_credentials()
+        if credentials is None:
+            return
+        host_data = self.get_allowed_health_host_for_check("head")
+        if host_data is None:
+            return
+        protocol = self.get_query_argument("protocol", "")
+        if protocol not in {"h2", "h3"} or host_data.get("source") == "tg-proxies":
+            self.set_status(400)
+            self.finish(
+                {"error": "Проверка доступна только для HTTP/2 и HTTP/3 HTTPS-прокси"}
+            )
+            return
+        username, password = credentials
+        cache_key = (
+            f"{host_data['host']}:{get_host_port(host_data)}\0{username}\0{protocol}"
+        )
+        result = get_cached_health_result("protocol", cache_key)
+        if result is None:
+            try:
+                async with asyncio.timeout(10):
+                    status, _, _, metadata = await proxy_request(
+                        host_data,
+                        username,
+                        password,
+                        *IP_ECHO_ENDPOINTS[0],
+                        protocol=protocol,
+                    )
+                if not 200 <= status < 300:
+                    raise ValueError(f"Cloudflare HTTP {status}")
+                result = {
+                    "ok": True,
+                    **metadata,
+                    "status_line": f"{metadata['proxy_http_version']} согласован · {metadata['proxy_tls_version']}",
+                }
+            except Exception as error:
+                result = {
+                    "ok": False,
+                    "error": (
+                        "Таймаут согласования"
+                        if isinstance(error, TimeoutError)
+                        else format_health_error(error)
+                    ),
+                }
+            set_cached_health_result("protocol", cache_key, result)
+        self.set_header("Cache-Control", "no-store")
+        self.write(result)
+
+
+class HealthReputationHandler(BaseHandler):
+    async def get(self):
+        credentials = self.require_authenticated_credentials()
+        if credentials is None:
+            return
+        host_data = self.get_allowed_health_host_for_check("head")
+        if host_data is None:
+            return
+        if host_data.get("source") == "tg-proxies":
+            raise tornado.web.HTTPError(400, reason="Выходной IP недоступен")
+        username, password = credentials
+        cache_key = f"{host_data['host']}\0{username}"
+        identity = get_cached_health_result("proxy_request", cache_key)
+        if identity is None:
+            identity = await run_https_proxy_request_check(
+                host_data, username, password
+            )
+        ip = identity.get("exit_ip")
+        if not identity.get("ok") or not ip:
+            self.set_status(502)
+            self.write({"error": "Не удалось определить выходной IP"})
+            return
+        if ip != self.get_query_argument("ip", ""):
+            self.set_status(409)
+            self.write({"error": "Выходной IP изменился. Обновите страницу"})
+            return
+
+        async def yandex_check():
+            # The endpoint classifies its caller, so verify the current proxy exit.
+            current = await run_https_proxy_request_check(host_data, username, password)
+            if not current.get("ok") or current.get("exit_ip") != ip:
+                return {
+                    "status": "error",
+                    "error": "Выходной IP изменился или недоступен",
+                }
+            return await run_https_proxy_request_check_endpoint(
+                host_data,
+                username,
+                password,
+                "mobileproxy.passport.yandex.net",
+                443,
+                "/tmgrdfrend/checkvpn",
+                response_kind="yandex",
+            )
+
+        self.set_header("Cache-Control", "no-store")
+        self.write(
+            {
+                "ip": ip,
+                "results": await get_reputation(
+                    ip,
+                    self.settings["reputation_keys"],
+                    yandex_check,
+                ),
+            }
+        )
+
+
+class HealthSpeedHandler(BaseHandler):
+    async def post(self):
+        credentials = self.require_authenticated_credentials()
+        if credentials is None:
+            return
+        host_data = self.get_allowed_health_host_for_check("head")
+        if host_data is None:
+            return
+        try:
+            megabytes = int(self.get_body_argument("megabytes", "10"))
+            protocol = self.get_body_argument("protocol", "h2")
+            if megabytes not in SIZES_MB or protocol not in {"h1", "h2", "h3"}:
+                raise ValueError()
+            if host_data.get("proxy_kind") == "mtproxy":
+                raise ValueError()
+            if protocol == "h3" and not host_data.get("http3_enabled"):
+                raise ValueError()
+        except ValueError:
+            self.set_status(400)
+            self.write({"error": "Недопустимый объём, протокол или маршрут замера"})
+            return
+        if self.settings.get("speed_test_running"):
+            self.set_status(409)
+            self.write({"error": "Уже идёт замер скорости. Дождитесь его завершения"})
+            return
+        # ponytail: one measurement per process to avoid bandwidth contention; shared lock if scaled.
+        self.settings["speed_test_running"] = True
+        self._speed_task = asyncio.current_task()
+        self.set_header("Content-Type", "application/x-ndjson")
+        self.set_header("Cache-Control", "no-store")
+        self.set_header("X-Accel-Buffering", "no")
+
+        async def publish(result):
+            self.write(json.dumps(result, ensure_ascii=False) + "\n")
+            await self.flush()
+
+        try:
+            await run_speed_test(
+                {**host_data, "port": get_host_port(host_data)},
+                *credentials,
+                megabytes,
+                protocol,
+                publish,
+            )
+        except asyncio.CancelledError:
+            pass
+        except tornado.iostream.StreamClosedError, ConnectionResetError:
+            pass
+        except Exception as error:
+            message = (
+                str(error)
+                if isinstance(error, ValueError)
+                else "Замер не завершён: ошибка сети, TLS или таймаут"
+            )
+            try:
+                await publish({"stage": "error", "error": message})
+            except tornado.iostream.StreamClosedError:
+                pass
+        finally:
+            self.settings["speed_test_running"] = False
+            self._speed_task = None
+
+    def on_connection_close(self):
+        task = getattr(self, "_speed_task", None)
+        if task is not None:
+            task.cancel()
 
 
 class HealthPingHandler(BaseHandler):
@@ -1468,6 +1733,15 @@ async def run_https_proxy_country_check(host_data, username, password) -> dict:
 
 def parse_country_response(body: str) -> str:
     value = body.strip()
+    if "=" in value:
+        value = next(
+            (
+                line.removeprefix("loc=").strip()
+                for line in value.splitlines()
+                if line.startswith("loc=")
+            ),
+            "",
+        )
     if value.startswith("{"):
         value = json.loads(value).get("country")
     if (
@@ -1487,64 +1761,28 @@ async def fetch_https_proxy_check_endpoint(
     target_path: str,
     response_kind: str,
 ) -> dict[str, object]:
-    reader: asyncio.StreamReader | None = None
-    writer: asyncio.StreamWriter | None = None
     try:
-        proxy_host = host_data["host"]
-        proxy_port = get_host_port(host_data)
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(
-                proxy_host,
-                proxy_port,
-                ssl=ssl.create_default_context(),
-                server_hostname=proxy_host,
-            ),
-            timeout=5,
+        response_code, response_headers, body, metadata = await proxy_request(
+            host_data,
+            username,
+            password,
+            target_host,
+            target_port,
+            target_path,
+            method="POST" if response_kind == "yandex" else "GET",
         )
-        credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
-        connect_request = (
-            f"CONNECT {target_host}:{target_port} HTTP/1.1\r\n"
-            f"Host: {target_host}:{target_port}\r\n"
-            f"Proxy-Authorization: Basic {credentials}\r\n"
-            f"Connection: keep-alive\r\n\r\n"
-        )
-        writer.write(connect_request.encode("ascii"))
-        await asyncio.wait_for(writer.drain(), timeout=2)
-        status_line, headers = await read_http_response_head(reader)
-        status_code, reason = parse_http_status_line(status_line)
-        if status_code != 200:
-            raise ValueError(f"CONNECT HTTP {status_code} {reason}".strip())
-
-        loop = asyncio.get_running_loop()
-        transport = writer.transport
-        protocol = transport.get_protocol()
-        tls_transport = await asyncio.wait_for(
-            loop.start_tls(
-                transport,
-                protocol,
-                ssl.create_default_context(),
-                server_hostname=target_host,
-            ),
-            timeout=5,
-        )
-        writer._transport = tls_transport  # type: ignore[attr-defined]
-        request = (
-            f"GET {target_path} HTTP/1.1\r\n"
-            f"Host: {target_host}\r\n"
-            f"User-Agent: px-manager/health\r\n"
-            f"Accept: text/plain\r\n"
-            f"Connection: close\r\n\r\n"
-        )
-        writer.write(request.encode("ascii"))
-        await asyncio.wait_for(writer.drain(), timeout=2)
-        response_status_line, response_headers = await read_http_response_head(reader)
-        response_code, response_reason = parse_http_status_line(response_status_line)
         if response_code < 200 or response_code >= 300:
-            raise ValueError(
-                f"{target_host} HTTP {response_code} {response_reason}".strip()
-            )
+            raise ValueError(f"{target_host} HTTP {response_code}")
 
-        body = await read_http_response_body(reader, response_headers)
+        if response_kind == "yandex":
+            detected = response_headers.get("x-yandex-eu-request")
+            if detected not in {"0", "1"}:
+                return {
+                    "status": "unknown",
+                    "error": "Неизвестный формат ответа Яндекса",
+                }
+            return {"status": "ok", "fields": {"VPN обнаружен": detected == "1"}}
+
         value = (
             parse_country_response(body)
             if response_kind == "country"
@@ -1558,6 +1796,7 @@ async def fetch_https_proxy_check_endpoint(
             "status": "responded",
             "status_code": response_code,
             "status_line": f"{target_host}: {value}",
+            **metadata,
             "country_code" if response_kind == "country" else "exit_ip": value,
             "request_kind": "https",
             "error": None,
@@ -1571,75 +1810,12 @@ async def fetch_https_proxy_check_endpoint(
             "request_kind": "https",
             "error": format_health_error(error),
         }
-    finally:
-        if writer is not None:
-            writer.close()
-            try:
-                await asyncio.wait_for(writer.wait_closed(), timeout=1)
-            except Exception:
-                pass
-
-
-async def read_http_response_head(
-    reader: asyncio.StreamReader,
-) -> tuple[str, dict[str, str]]:
-    status_line = (
-        await asyncio.wait_for(reader.readline(), timeout=5)
-    ).decode("iso-8859-1", "replace").strip()
-    headers = {}
-    while True:
-        line = await asyncio.wait_for(reader.readline(), timeout=5)
-        if line in {b"\r\n", b"\n", b""}:
-            break
-        text = line.decode("iso-8859-1", "replace")
-        name, sep, value = text.partition(":")
-        if sep:
-            headers[name.strip().lower()] = value.strip()
-
-    return status_line, headers
-
-
-def parse_http_status_line(status_line: str) -> tuple[int, str]:
-    status_match = re.match(r"^HTTP/\d(?:\.\d)?\s+(\d{3})(?:\s+(.*))?$", status_line)
-    if status_match is None:
-        raise ValueError("proxy returned a non-HTTP response")
-    return int(status_match.group(1)), status_match.group(2) or ""
-
-
-async def read_http_response_body(
-    reader: asyncio.StreamReader,
-    headers: dict[str, str],
-) -> str:
-    limit = 4096
-    data = bytearray()
-    async with asyncio.timeout(5):
-        if headers.get("transfer-encoding", "").lower() == "chunked":
-            while True:
-                line = await reader.readline()
-                size = int(line.split(b";", 1)[0].strip(), 16)
-                if size < 0 or len(data) + size > limit:
-                    raise ValueError("Слишком большой ответ геосервиса")
-                if size == 0:
-                    break
-                data.extend(await reader.readexactly(size))
-                if await reader.readexactly(2) != b"\r\n":
-                    raise ValueError("Некорректный chunked-ответ")
-        elif "content-length" in headers:
-            size = int(headers["content-length"])
-            if not 0 <= size <= limit:
-                raise ValueError("Слишком большой ответ геосервиса")
-            data.extend(await reader.readexactly(size))
-        else:
-            while chunk := await reader.read(limit + 1 - len(data)):
-                data.extend(chunk)
-                if len(data) > limit:
-                    raise ValueError("Слишком большой ответ геосервиса")
-    return data.decode("utf-8", "replace").strip()
 
 
 def extract_ip_echo(body: str) -> str:
+    value = next((line.removeprefix("ip=").strip() for line in body.splitlines() if line.startswith("ip=")), body.strip())
     try:
-        return str(ipaddress.ip_address(body.strip()))
+        return str(ipaddress.ip_address(value))
     except ValueError:
         return ""
 
@@ -1897,22 +2073,14 @@ def get_telethon_loggers():
 
 
 async def resolve_host_addresses(host: str) -> dict[str, object]:
-    system_task = asyncio.create_task(resolve_host_with_system_dns(host))
-    google_task = asyncio.create_task(resolve_host_with_public_dns(host, "8.8.8.8"))
-    cloudflare_task = asyncio.create_task(
-        resolve_host_with_public_dns(host, "1.1.1.1")
+    system_result, cloudflare_result = await asyncio.gather(
+        *(resolve_host_with_dns(host, resolver) for resolver in DNS_RESOLVERS)
     )
-    system_result, google_result, cloudflare_result = await asyncio.gather(
-        system_task,
-        google_task,
-        cloudflare_task,
-    )
-    ok = bool(system_result["ok"] and google_result["ok"] and cloudflare_result["ok"])
+    ok = bool(system_result["ok"] and cloudflare_result["ok"])
     errors = [
         f"{name}: {result['error']}"
         for name, result in (
             ("system", system_result),
-            ("8.8.8.8", google_result),
             ("1.1.1.1", cloudflare_result),
         )
         if result["error"]
@@ -1921,10 +2089,30 @@ async def resolve_host_addresses(host: str) -> dict[str, object]:
         "ok": ok,
         "status": "resolved" if ok else "error",
         "system": system_result,
-        "google": google_result,
         "cloudflare": cloudflare_result,
         "error": "; ".join(errors) if errors else None,
     }
+
+
+async def resolve_host_with_dns(host: str, resolver: str) -> dict[str, object]:
+    nameserver = DNS_RESOLVERS[resolver]
+    key = (host.lower(), resolver)
+    cached = DNS_RESULT_CACHE.get(key)
+    if cached and time.monotonic() < cached[0]:
+        DNS_RESULT_CACHE.move_to_end(key)
+        return cached[1]
+    DNS_RESULT_CACHE.pop(key, None)
+    result = (
+        await resolve_host_with_system_dns(host)
+        if nameserver is None
+        else await resolve_host_with_public_dns(host, nameserver)
+    )
+    if result["ok"]:
+        DNS_RESULT_CACHE[key] = (time.monotonic() + DNS_CACHE_TTL_SECONDS, result)
+        DNS_RESULT_CACHE.move_to_end(key)
+        while len(DNS_RESULT_CACHE) > DNS_CACHE_MAX_SIZE:
+            DNS_RESULT_CACHE.popitem(last=False)
+    return result
 
 
 async def resolve_host_with_system_dns(host: str) -> dict[str, object]:
@@ -1932,13 +2120,15 @@ async def resolve_host_with_system_dns(host: str) -> dict[str, object]:
         loop = asyncio.get_running_loop()
         addrinfo = await asyncio.wait_for(
             loop.getaddrinfo(host, None, type=socket.SOCK_STREAM),
-            timeout=5,
+            timeout=DNS_TIMEOUT_SECONDS,
         )
     except Exception as error:
-        return build_dns_result(False, [], str(error) or error.__class__.__name__)
+        return build_dns_result(False, [], format_dns_error(error, host, "system"))
 
     addresses = sorted({item[4][0] for item in addrinfo})
-    return build_dns_result(bool(addresses), addresses, None if addresses else "no records")
+    return build_dns_result(
+        bool(addresses), addresses, None if addresses else "Нет DNS-записей"
+    )
 
 
 async def resolve_host_with_public_dns(
@@ -1947,19 +2137,19 @@ async def resolve_host_with_public_dns(
 ) -> dict[str, object]:
     resolver = dns.asyncresolver.Resolver(configure=False)
     resolver.nameservers = [nameserver]
-    resolver.lifetime = 5
-    resolver.timeout = 2
+    resolver.lifetime = DNS_TIMEOUT_SECONDS
+    resolver.timeout = 15
     tasks = [
         asyncio.create_task(resolve_dns_record(resolver, host, dns.rdatatype.A)),
         asyncio.create_task(resolve_dns_record(resolver, host, dns.rdatatype.AAAA)),
     ]
     results = await asyncio.gather(*tasks)
     addresses = sorted({address for result in results for address in result[0]})
-    errors = [result[1] for result in results if result[1]]
+    errors = list(dict.fromkeys(result[1] for result in results if result[1]))
     if addresses:
         return build_dns_result(True, addresses, None)
 
-    return build_dns_result(False, [], "; ".join(errors) or "no records")
+    return build_dns_result(False, [], "; ".join(errors) or "Нет DNS-записей")
 
 
 async def resolve_dns_record(
@@ -1971,15 +2161,46 @@ async def resolve_dns_record(
         answer = await resolver.resolve(host, record_type)
     except dns.resolver.NoAnswer:
         return [], None
-    except dns.resolver.NXDOMAIN as error:
-        return [], str(error) or "NXDOMAIN"
-    except dns.exception.DNSException as error:
-        return [], str(error) or error.__class__.__name__
+    except (dns.exception.DNSException, OSError) as error:
+        return [], format_dns_error(
+            error,
+            host,
+            ",".join(resolver.nameservers),
+            dns.rdatatype.to_text(record_type),
+        )
 
     return [item.to_text() for item in answer], None
 
 
-def build_dns_result(ok: bool, addresses: list[str], error: str | None) -> dict[str, object]:
+def format_dns_error(
+    error: Exception, host: str, nameserver: str, record_type="-"
+) -> str:
+    ERROR_LOG.warning(
+        "Ошибка DNS host=%s nameserver=%s record=%s: %s",
+        host,
+        nameserver,
+        record_type,
+        error,
+        exc_info=True,
+    )
+    if isinstance(error, (TimeoutError, dns.exception.Timeout)):
+        return "Превышено время ожидания DNS"
+    if isinstance(error, dns.resolver.NXDOMAIN):
+        return "Домен не найден"
+    if isinstance(error, dns.resolver.NoNameservers):
+        return "DNS-сервер недоступен"
+    if isinstance(error, socket.gaierror):
+        return (
+            "Домен не найден"
+            if error.errno == socket.EAI_NONAME
+            else "Системный DNS недоступен"
+        )
+    return "Ошибка DNS"
+
+
+def build_dns_result(
+    ok: bool, addresses: list[str], error: str | None
+) -> dict[str, object]:
     return {
         "ok": ok,
         "addresses": addresses,
@@ -2526,6 +2747,8 @@ def parse_tg_proxy_health_host(line: str, line_number: int) -> dict:
         "title": f"Telegram {host}",
         "source": "tg-proxies",
         "proxy_kind": proxy_kind,
+        "username": get_single_query_value(query, "user") if proxy_kind == "socks5" else "",
+        "password": get_single_query_value(query, "pass") if proxy_kind == "socks5" else "",
         "secret": secret,
         "mtproxy_secret_mode": mtproxy_secret_mode,
         "health_checks": get_health_checks_for_host(host, health_checks),
@@ -2893,6 +3116,14 @@ def make_app(
         json.loads(subscription_path.read_text()) if subscription_path.exists() else None
     )
     admin_user = read_optional_text(config_dir / "admin.txt") or None
+    reputation_path = config_dir / "reputation.json"
+    reputation_keys = (
+        json.loads(reputation_path.read_text()) if reputation_path.exists() else {}
+    )
+    if not isinstance(reputation_keys, dict) or any(
+        not isinstance(value, str) for value in reputation_keys.values()
+    ):
+        raise ValueError("reputation.json должен содержать объект с API-ключами")
 
     session_store = SessionStore(SESSION_TTL_SECONDS)
     ban_store = PersistentBanStore(
@@ -2907,6 +3138,7 @@ def make_app(
             (r"/admin/(auth\.log|ban\.log)", AdminLogHandler),
             (r"/doc", DocHandler),
             (r"/health", HealthPageHandler),
+            (r"/lookup", LookupPageHandler),
             (r"/logout", LogoutHandler),
             (r"/favicon.ico", FaviconHandler),
             (r"/robots.txt", RobotsHandler),
@@ -2914,6 +3146,9 @@ def make_app(
             (r"/api/health/connect", HealthConnectHandler),
             (r"/api/health/dns", HealthDnsHandler),
             (r"/api/health/head", HealthHeadHandler),
+            (r"/api/health/protocol", HealthProtocolHandler),
+            (r"/api/health/reputation", HealthReputationHandler),
+            (r"/api/health/speed", HealthSpeedHandler),
             (r"/api/health/ping", HealthPingHandler),
             (r"/api/generate/proxy-list", ProxyListGenerateHandler),
             (r"/api/generate/super-proxy", SuperProxyGenerateHandler),
@@ -2933,6 +3168,7 @@ def make_app(
         data_dir=data_dir,
         log_dir=log_dir,
         admin_user=admin_user,
+        reputation_keys=reputation_keys,
         password_store=PasswordStore.from_file(config_dir / "passwd.json"),
         hosts_data=hosts_data,
         mega_proxy_subscription=mega_proxy_subscription,

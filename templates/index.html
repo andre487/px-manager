@@ -36,6 +36,7 @@
         <nav class="page-links" aria-label="Навигация">
           <a href="/doc">Документация</a>
           <a href="/health">Проверка прокси</a>
+          <a href="/lookup">Проверка IP или домена</a>
           {% if is_admin %}<a href="/admin">Админка</a>{% end %}
         </nav>
         {% if tg_proxies %}
@@ -53,6 +54,7 @@
         <h1>PX Manager 487</h1>
         {% if error %}<p class="error">{{ escape(error) }}</p>{% end %}
         <form method="post" action="/">
+          <input type="hidden" name="retpath" value="{{ retpath }}">
           {% module xsrf_form_html() %}
           <label>
             Логин

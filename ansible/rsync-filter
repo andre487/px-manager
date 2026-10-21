@@ -1,0 +1,11 @@
+- __pycache__/
++ /*.py
++ /pyproject.toml
++ /.python-version
++ /uv.lock
++ /README.md
++ /templates/***
++ /static/***
++ /ansible/
++ /ansible/scripts/***
+- *

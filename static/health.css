@@ -1,3 +1,105 @@
+@font-face {
+  font-family: "Twemoji Country Flags";
+  src: url("fonts/TwemojiCountryFlags.woff2") format("woff2");
+  unicode-range: U+1F1E6-1F1FF;
+}
+
+.country-flag {
+  font-family: "Twemoji Mozilla", "Twemoji Country Flags", sans-serif;
+}
+
+.health-request-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.reputation-button,
+.reputation-dialog button {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--accent);
+  background: var(--surface-soft);
+  font: inherit;
+  cursor: pointer;
+}
+
+.reputation-dialog {
+  width: min(620px, calc(100% - 24px));
+  max-height: calc(100% - 32px);
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  color: var(--text);
+  background: var(--surface-solid);
+  overflow-wrap: anywhere;
+}
+
+.reputation-dialog::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+
+.reputation-dialog form {
+  text-align: right;
+}
+
+.reputation-report section {
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.reputation-report h3 {
+  margin: 0 0 10px;
+}
+
+.reputation-report dl {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.reputation-report dd {
+  margin: 0;
+}
+
+.reputation-time {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.lookup-form {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.lookup-form input,
+.lookup-form select {
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-solid);
+  font: inherit;
+}
+
+.reputation-report {
+  overflow-wrap: anywhere;
+}
+
+.reputation-button:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.health-proxy [data-speed] {
+  margin-top: 12px;
+}
+
 .health-page {
   --info-bg: #e9f3ff;
   --info-text: #123f6d;
@@ -54,17 +156,20 @@
 
 .health-checks {
   display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: 10px;
 }
 
 .health-check {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
   gap: 10px;
   align-items: center;
 }
 
 .health-label {
+  white-space: nowrap;
   color: var(--muted);
   font-size: 13px;
   font-weight: 650;
@@ -82,7 +187,7 @@
   white-space: pre-wrap;
 }
 
-.health-status[data-check="dns"] {
+.health-status[data-check^="dns-"] {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 
@@ -151,7 +256,7 @@
   display: none;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 860px) {
   .health-page main {
     width: min(100% - 24px, 680px);
   }
@@ -160,10 +265,6 @@
     grid-template-columns: 1fr;
     gap: 16px;
     padding: 20px 18px;
-  }
-
-  .health-check {
-    grid-template-columns: 86px minmax(0, 1fr);
   }
 
   .health-status {

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="{{ static_url("favicon.ico") }}" sizes="any">
+  <link rel="stylesheet" href="{{ static_url("common.css") }}">
+  <link rel="stylesheet" href="{{ static_url("health.css") }}">
+  <title>Проверка IP или домена — PX Manager 487</title>
+</head>
+<body class="health-page">
+  <main>
+    <div class="nav"><a href="/health">К проверке прокси</a></div>
+    <p class="eyebrow">Диагностика</p>
+    <h1>Проверка IP или домена</h1>
+    <p class="page-lead">DNS с сервера PX Manager и репутация IP в подключённых сервисах.</p>
+    <form method="get" action="/lookup" class="lookup-form">
+      <label for="lookup-target">IP-адрес или домен</label>
+      <input id="lookup-target" name="target" value="{{ target }}" placeholder="8.8.8.8, 2001:4860:4860::8888 или example.com" required maxlength="253" autocapitalize="none" spellcheck="false">
+      <button class="reputation-button" type="submit">Проверить</button>
+    </form>
+    {% if error %}<p class="health-status status-error" role="alert">{{ error }}</p>{% end %}
+    {% if dns_result is not None %}
+      <section aria-labelledby="lookup-dns-title">
+        <h2 id="lookup-dns-title">DNS</h2>
+        {% for name, label in (("system", "System"), ("cloudflare", "Cloudflare · 1.1.1.1")) %}
+          <h3>{{ label }}</h3>
+          <p class="health-status {{ 'status-ok' if dns_result[name]['ok'] else 'status-error' }}">{{ ", ".join(dns_result[name]["addresses"]) or dns_result[name]["error"] or "Нет записей" }}</p>
+        {% end %}
+      </section>
+    {% end %}
+    {% if len(addresses) > lookup_max_ips %}
+      <p>Найдено адресов: {{ len(addresses) }}. Репутация проверена для первых {{ lookup_max_ips }}; остальные можно проверить отдельно.</p>
+    {% end %}
+    {% for ip, results in reports %}
+      <article class="reputation-report" aria-label="Репутация {{ ip }}">
+        <h2>{{ ip }}</h2>
+        {% for result in results %}
+          <section>
+            <h3>{{ result["name"] }}</h3>
+            {% if result["status"] == "ok" %}
+              <dl>
+                {% for label, value in result["fields"].items() %}
+                  <dt>{{ label }}</dt>
+                  <dd>{{ "Да" if value is True or value == "yes" else "Нет" if value is False or value == "no" else "Нет данных" if value is None else str(value) }}</dd>
+                {% end %}
+              </dl>
+            {% else %}
+              <p>{{ result.get("error", "Сервис недоступен") }}</p>
+            {% end %}
+            {% if result.get("checked_at") %}
+              <p class="reputation-time">{{ "Из кеша" if result.get("cached") else "Проверено" }} · {{ format_timestamp(result["checked_at"]) }}</p>
+            {% end %}
+          </section>
+        {% end %}
+      </article>
+    {% end %}
+    <div class="nav"><a href="/">На главную</a> <a href="/health">Проверка прокси</a></div>
+  </main>
+</body>
+</html>
