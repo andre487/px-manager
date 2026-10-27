@@ -11,6 +11,7 @@ from tornado.httpclient import AsyncHTTPClient, HTTPClientError, HTTPRequest
 
 PROVIDERS = {
     'yandex': 'Яндекс',
+    'rkn': 'РКН · публичные списки (Cheburcheck)',
     'cloudflare': 'Cloudflare Radar · провайдер',
     'proxycheck': 'ProxyCheck',
     'ipqs': 'IPQualityScore',
@@ -80,7 +81,23 @@ async def cached_check(provider, ip, key, check):
 def parse_result(provider, ip, data):
     if not isinstance(data, dict):
         raise ValueError('Некорректный ответ сервиса')
-    if provider == 'cloudflare':
+    if provider == 'rkn':
+        address = ipaddress.ip_address(ip)
+        if ipaddress.ip_address(data.get('target', '')) != address:
+            raise ValueError('IP в ответе сервиса не совпал')
+        networks, cdns = data['blocked_subnets'], data['cdn_providers']
+        if not isinstance(networks, list) or not isinstance(cdns, dict):
+            raise ValueError('Некорректный формат списков блокировок')
+        if any(address not in ipaddress.ip_network(network) for network in networks):
+            raise ValueError('Подсеть в ответе сервиса не содержит IP')
+        fields = {
+            'Найден в агрегированном списке IP': bool(networks),
+            'Совпавшие диапазоны': ', '.join(networks) or 'Нет',
+            'CDN в списках ограничений': ', '.join(sorted(cdns)) or 'Нет',
+            'Источник': 'Cheburcheck / Antifilter',
+            'Точность': 'Совпадение с диапазоном или CDN не подтверждает отдельное решение РКН по IP. Доступность у провайдера не проверялась.',
+        }
+    elif provider == 'cloudflare':
         if data.get('success') is not True:
             raise ValueError('Сервис отклонил запрос: проверьте токен и права')
         item = data['result']['ip']
@@ -131,7 +148,9 @@ def parse_result(provider, ip, data):
 async def check_service(provider, ip, key):
     headers = {'Accept': 'application/json'}
     method, body = 'GET', None
-    if provider == 'cloudflare':
+    if provider == 'rkn':
+        url = 'https://cheburcheck.ru/api/v1/check?' + urlencode({'target': ip})
+    elif provider == 'cloudflare':
         url = 'https://api.cloudflare.com/client/v4/radar/entities/ip?' + urlencode(
             {'ip': ip}
         )
@@ -167,6 +186,15 @@ async def check_service(provider, ip, key):
         )
         return parse_result(provider, ip, json.loads(response.body))
     except HTTPClientError as error:
+        if provider == 'rkn':
+            return {
+                'status': 'error',
+                'error': (
+                    'Лимит запросов Cheburcheck исчерпан'
+                    if error.code == 429
+                    else f'Cheburcheck недоступен (HTTP {error.code})'
+                ),
+            }
         return {
             'status': 'error',
             'error': f'Ошибка HTTP {error.code}: проверьте доступность, ключ и квоту',
@@ -179,7 +207,7 @@ async def check_service(provider, ip, key):
 async def get_reputation(ip, keys, yandex_check=None):
     async def one(provider):
         key = keys.get(provider, '')
-        if provider != 'yandex' and not key:
+        if provider not in ('yandex', 'rkn') and not key:
             return {
                 'provider': provider,
                 'name': PROVIDERS[provider],

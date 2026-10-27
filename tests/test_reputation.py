@@ -43,13 +43,19 @@ class ReputationTest(unittest.IsolatedAsyncioTestCase):
             for _ in range(2):
                 await reputation.cached_check('test', '192.0.2.1', '', check)
             self.assertEqual(2, check.await_count)
-        result = await reputation.get_reputation(
-            '192.0.2.1',
-            {},
-            AsyncMock(return_value={'status': 'ok', 'fields': {'VPN': False}}),
-        )
+        with patch(
+            'reputation.check_service',
+            new=AsyncMock(
+                return_value={'status': 'ok', 'fields': {'Найден в списке': False}}
+            ),
+        ):
+            result = await reputation.get_reputation(
+                '192.0.2.1',
+                {},
+                AsyncMock(return_value={'status': 'ok', 'fields': {'VPN': False}}),
+            )
         self.assertEqual(4, sum(item['status'] == 'unconfigured' for item in result))
-        self.assertEqual(1, len(reputation.CACHE))
+        self.assertEqual(2, len(reputation.CACHE))
 
     async def test_arbitrary_ip_skips_yandex_and_reuses_shared_cache(self):
         ip = '192.0.2.1'
@@ -67,7 +73,9 @@ class ReputationTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             next(result for result in second if result['provider'] == 'ipqs')['cached']
         )
-        check.assert_awaited_once_with('ipqs', ip, 'key')
+        self.assertEqual(2, check.await_count)
+        check.assert_any_await('ipqs', ip, 'key')
+        check.assert_any_await('rkn', ip, '')
 
     def test_provider_responses(self):
         ip = '192.0.2.1'
@@ -220,3 +228,61 @@ class ReputationTest(unittest.IsolatedAsyncioTestCase):
                 '/tmgrdfrend/checkvpn',
                 method='POST',
             )
+
+    async def test_rkn_public_lists_do_not_treat_cdn_verdict_as_registry_match(self):
+        ip = '1.1.1.1'
+        data = {
+            'target': ip,
+            'blocked': True,
+            'blocked_subnets': [],
+            'cdn_providers': {'cloudflare': [{'cidr': '1.1.1.0/24'}]},
+        }
+        client = Mock(
+            fetch=AsyncMock(return_value=Mock(body=json.dumps(data).encode()))
+        )
+        with patch('reputation.AsyncHTTPClient', return_value=client):
+            result = await reputation.check_service('rkn', ip, '')
+        self.assertEqual('ok', result['status'])
+        self.assertIs(False, result['fields']['Найден в агрегированном списке IP'])
+        self.assertEqual('cloudflare', result['fields']['CDN в списках ограничений'])
+        request = client.fetch.await_args.args[0]
+        self.assertEqual(
+            'https://cheburcheck.ru/api/v1/check?target=1.1.1.1', request.url
+        )
+        self.assertNotIn('Authorization', request.headers)
+        data['blocked_subnets'] = ['1.1.1.0/24']
+        self.assertIs(
+            True,
+            reputation.parse_result('rkn', ip, data)['fields'][
+                'Найден в агрегированном списке IP'
+            ],
+        )
+        data['target'] = '8.8.8.8'
+        with self.assertRaises(ValueError):
+            reputation.parse_result('rkn', ip, data)
+        for data in (
+            {'target': ip},
+            {'target': ip, 'blocked_subnets': ['8.8.8.0/24'], 'cdn_providers': {}},
+        ):
+            with self.assertRaises((KeyError, ValueError)):
+                reputation.parse_result('rkn', ip, data)
+
+    def test_rkn_ipv6_ranges(self):
+        result = reputation.parse_result(
+            'rkn',
+            '2001:db8::1',
+            {
+                'target': '2001:db8:0::1',
+                'blocked_subnets': ['2001:db8::/32'],
+                'cdn_providers': {},
+            },
+        )
+        self.assertIs(True, result['fields']['Найден в агрегированном списке IP'])
+
+    async def test_rkn_rate_limit_is_error_not_negative_result(self):
+        client = Mock(fetch=AsyncMock(side_effect=reputation.HTTPClientError(429)))
+        with patch('reputation.AsyncHTTPClient', return_value=client):
+            result = await reputation.check_service('rkn', '192.0.2.1', '')
+        self.assertEqual('error', result['status'])
+        self.assertNotIn('fields', result)
+        self.assertIn('Лимит', result['error'])
